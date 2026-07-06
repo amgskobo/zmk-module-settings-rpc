@@ -2,10 +2,18 @@ name: Test ZMK Module
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
     paths-ignore:
       - "web/**"
       - ".github/workflows/web-ui.yml"
+  pull_request:
+    paths-ignore:
+      - "web/**"
+      - ".github/workflows/web-ui.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
