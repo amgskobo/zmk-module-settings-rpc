@@ -1,191 +1,90 @@
-# ZMK Module Template - Web Frontend
+# Activity settings client
 
-This is a minimal web application template for interacting with ZMK firmware
-modules that implement custom Studio RPC subsystems.
+This React client connects to a keyboard through Studio's USB serial transport.
+It reads and updates idle and sleep timeouts through the `zmk__settings` custom
+RPC subsystem. The keyboard must support that unofficial Studio extension.
+The firmware registers this subsystem as unsecured so the timeouts can be read
+while Studio is locked, but it refuses a change unless Studio is unlocked
+("Unlock required"). The transport's own requirements still apply.
 
-## Features
+`src/App.tsx` owns connection controls. `src/ActivitySettings.tsx` collects
+settings from the central and reporting peripherals, displays differences,
+and offers refresh, save and synchronization. A successful setter response
+does not prove delivery to every peripheral; refresh and incoming notifications
+provide the reported values.
 
-- **Device Connection**: Connect to ZMK devices via Bluetooth (GATT) or Serial
-- **Custom RPC**: Communicate with your custom firmware module using protobuf
-- **React + TypeScript**: Modern web development with Vite for fast builds
-- **react-zmk-studio**: Uses the `@cormoran/zmk-studio-react-hook` library for
-  simplified ZMK integration
+Connection, subsystem-index and discovered-catalog changes reset this view. Responses and notifications
+from an earlier connection are ignored, and request deadlines and refresh timers are canceled on replacement or
+unmount. A successful or failed request releases its five-second deadline. A synchronization acknowledgement keeps any reported
+peripheral mismatch visible until refreshed notifications establish new values.
+It confirms that the request was applied locally, not delivery to every device.
 
-## Quick Start
+Unsolicited reports keep the device list and mismatch warning current while
+preserving unsaved input, including invalid text. An explicit Refresh replaces
+the draft with newly reported values. A successful save or synchronization
+acknowledges the submitted draft; it does not confirm delivery to every device.
+Retiring a client stops its UI work and follow-up requests. An RPC already
+handed to the transport may still take effect; retirement provides no rollback.
 
-```bash
-# Install dependencies
-npm install
+Timeout edits remain text until save or synchronization. Both actions accept
+whole decimal milliseconds from 0 through 4294967295; 0 disables that timeout.
+Empty fields, negative/fractional values, exponent notation and out-of-range
+values are rejected before encoding or sending an RPC. They are not truncated
+or silently converted to zero. The firmware further refuses a sleep timeout
+from 1 to 59999 ms and, in a build without sleep support, any change of the
+sleep timeout; the client shows the firmware's error message. Notifications
+retain the firmware's exact unsigned values, including the upper bound.
 
-# Generate TypeScript types from proto
-npm run generate
+## Development
 
-# Run development server
+Use Node.js and the checked-in npm lockfile inside a prepared Docker workspace.
+Keep installed dependencies and generated outputs in a container or named volume:
+
+```sh
+npm ci
 npm run dev
-
-# Build for production
+npm test
+npm run lint
 npm run build
-
-# Run tests
-npm test
 ```
 
-## Project Structure
+The development, test and build commands generate TypeScript messages from
+`../proto` with `buf generate`. Generated files under `src/proto` are ignored;
+a fresh checkout does not need a previous build before testing. Watch and
+coverage modes use the same generation step:
 
-```
-src/
-├── main.tsx              # React entry point
-├── App.tsx               # Main application with connection UI
-├── App.css               # Styles
-└── proto/                # Generated protobuf TypeScript types
-    └── zmk/template/
-        └── custom.ts
-
-test/
-├── App.spec.tsx              # Tests for App component
-└── RPCTestSection.spec.tsx   # Tests for RPC functionality
-```
-
-## How It Works
-
-### 1. Protocol Definition
-
-The protobuf schema is defined in `../proto/zmk/template/custom.proto`:
-
-```proto
-message Request {
-    oneof request_type {
-        SampleRequest sample = 1;
-    }
-}
-
-message Response {
-    oneof response_type {
-        ErrorResponse error = 1;
-        SampleResponse sample = 2;
-    }
-}
-```
-
-### 2. Code Generation
-
-TypeScript types are generated using `ts-proto`:
-
-```bash
-npm run generate
-```
-
-This runs `buf generate` which uses the configuration in `buf.gen.yaml`.
-
-### 3. Using react-zmk-studio
-
-The app uses the `@cormoran/zmk-studio-react-hook` library:
-
-```typescript
-import { useZMKApp, ZMKCustomSubsystem } from "@cormoran/zmk-studio-react-hook";
-
-// Connect to device
-const { state, connect, findSubsystem, isConnected } = useZMKApp();
-
-// Find your subsystem
-const subsystem = findSubsystem("zmk__template");
-
-// Create service and make RPC calls
-const service = new ZMKCustomSubsystem(state.connection, subsystem.index);
-const response = await service.callRPC(payload);
-```
-
-## Testing
-
-This template includes Jest tests as a reference implementation for template users.
-
-### Running Tests
-
-```bash
-# Run all tests
-npm test
-
-# Run tests in watch mode
+```sh
 npm run test:watch
-
-# Run tests with coverage
 npm run test:coverage
 ```
 
-### Test Structure
+The generator settings are in `buf.gen.yaml`. The activity wire schema is
+`../proto/zmk/settings/core.proto`; `zmk__settings` must match the firmware's
+registration. Do not change a wire field or subsystem identifier independently
+of the firmware.
 
-The tests demonstrate how to use the `react-zmk-studio` test helpers:
+## Verification limits
 
-- **App.spec.tsx**: Basic rendering tests for the main application
-- **RPCTestSection.spec.tsx**: Tests showing how to mock ZMK connection and test
-  components that interact with devices
+Jest renders the controls and exercises RPC responses and notifications through
+controlled connection helpers. These tests do not establish USB or Bluetooth
+delivery, Studio access control, real split scheduling or persistence on a
+board. The module's separate activity-handler suite uses generated nanopb and
+the complete production C handler for its wire contracts; see the root README.
 
-### Writing Tests
+`npm run build` writes local output. Publishing requires a separate explicit
+instruction; running these commands does not upload the client.
 
-Use the test helpers from `@cormoran/zmk-studio-react-hook/testing`:
+## Console privacy
 
-```typescript
-import {
-  createConnectedMockZMKApp,
-  ZMKAppProvider,
-} from "@cormoran/zmk-studio-react-hook/testing";
+Console failures include a fixed operation label and an allowlisted error category.
+Messages, stacks, causes, arbitrary error names, profile/device names, addresses,
+setting keys, prefixes, and values are not console arguments. UI errors and
+intentional setting/profile displays retain their existing behavior. Individual RPC payloads and notifications are not console diagnostics.
+The Vite plugin also sanitizes executable console output in the two locked Studio SDKs. New SDK log sites stop the build for review; both SDKs are excluded from development prebundling so the same transform applies in development and production. Browser-generated diagnostics and unrelated browser extensions are outside this application's control.
 
-// Create a mock connected device with subsystems
-const mockZMKApp = createConnectedMockZMKApp({
-  deviceName: "Test Device",
-  subsystems: ["zmk__template"],
-});
+## Dependency security
 
-// Wrap your component with the provider
-render(
-  <ZMKAppProvider value={mockZMKApp}>
-    <YourComponent />
-  </ZMKAppProvider>
-);
-```
-
-See the test files in `./test/` for complete examples.
-
-## Customization
-
-To adapt this template for your own ZMK module:
-
-1. **Update the proto file**: Modify `../proto/zmk/template/custom.proto` with
-   your message types
-2. **Regenerate types**: Run `npm run generate`
-3. **Update subsystem identifier**: Change `SUBSYSTEM_IDENTIFIER` in `App.tsx`
-   to match your firmware registration
-4. **Update RPC logic**: Modify the request/response handling in `App.tsx`
-5. **Update tests**: Modify tests to match your custom subsystem identifier and
-   functionality
-
-## Dependencies
-
-- **@cormoran/zmk-studio-react-hook**: React hooks for ZMK Studio (includes
-  connection management and RPC utilities)
-- **@zmkfirmware/zmk-studio-ts-client**: Patched ZMK Studio TypeScript client
-  with custom RPC support
-- **ts-proto**: Protocol buffers code generator for TypeScript
-- **React 19**: Modern React with hooks
-- **Vite**: Fast build tool and dev server
-
-### Development Dependencies
-
-- **Jest**: Testing framework
-- **@testing-library/react**: React testing utilities
-- **ts-jest**: TypeScript support for Jest
-- **identity-obj-proxy**: CSS mock for testing
-
-## Development Notes
-
-- The `react-zmk-studio` directory contains a copy of the library for
-  reference - it's automatically built and linked via `package.json`
-- Proto generation uses `buf` and `ts-proto` for clean TypeScript types
-- Connection state is managed by the `useZMKApp` hook from react-zmk-studio
-- RPC calls are made through `ZMKCustomSubsystem` service class
-
-## See Also
-
-- [design.md](./design.md) - Detailed frontend architecture documentation
-- [react-zmk-studio/README.md](./react-zmk-studio/README.md) - react-zmk-studio
-  library documentation
+`package.json` overrides the Studio client's transitive `protobufjs` dependency
+to `7.6.5`, including the patched UTF-8 helper. Use `npm ci` with this lockfile.
+After changing dependencies, run `npm audit --omit=dev`, the Web tests and the
+production build.

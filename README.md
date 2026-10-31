@@ -14,24 +14,31 @@ details on how to configure ZMK modules.
 - **React Web UI**: Modern web interface for device configuration
 - **Real-time Notifications**: Receive settings updates from all connected devices
 
+The timeouts can be read while Studio is locked, but changing them needs an
+unlocked Studio; a locked keyboard answers "Unlock required". The keyboard also
+refuses a sleep timeout from 1 to 59999 ms ("Sleep too short"), because a
+battery-powered keyboard would sleep again seconds after each key press; 0
+still turns sleep off. A build without sleep support refuses any change of the
+sleep timeout ("Sleep not supported"). A request refused by these validation guards changes nothing. A setter or
+storage failure is a separate boundary: the core schedules persistence and the
+RPC acknowledgement does not establish durable storage or atomic application
+of both values on every device.
+
 ### Core Implementation
 
 This module includes the following components:
 
 - Core settings protocol: `proto/zmk/settings/core.proto` and `core.options`
-- Settings RPC handler: `src/studio/settings_handler.c`
+- Settings RPC handler: `src/studio/settings_rpc_handler.c`
 - Event relay system: `src/events/` (for split keyboard synchronization)
 - Configuration flags in `Kconfig`
 - Test suite: `./tests/studio`
 
-### Extending with Custom Protocols
+The build selects the activity settings handler and schema explicitly. The
+unused sample protocol has been removed; it had no registered handler or client.
+An independent RPC extension must own its schema, handler and registration.
 
-The module also includes a template for adding your own custom RPC protocols:
-
-- Custom protocol template: `proto/zmk/template/custom.proto` and `custom.options`
-- Custom handler: `src/studio/custom_handler.c`
-
-### Web UI for Custom Protocols
+### Web UI
 
 The `./web` directory contains a React-based web interface based on the
 [vite template `react-ts`](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts)
@@ -52,18 +59,20 @@ You can use this ZMK module with the following setup:
    manifest:
      remotes:
        ...
+       - name: amgskobo
+         url-base: https://github.com/amgskobo
        - name: cormoran
          url-base: https://github.com/cormoran
      projects:
        ...
        - name: zmk-module-settings-rpc
-         remote: cormoran
-         revision: main # or specific commit hash
+         remote: amgskobo
+         revision: codex/settings-rpc-review
        ...
        # The below settings are required to use the unofficial Studio custom RPC feature
        - name: zmk
          remote: cormoran
-         revision: v0.3-branch+custom-studio-protocol+activity
+         revision: e5c9b6915b56801193e359dd9bad4a167ce0d1b8
          import:
            file: app/west.yml
    ```
@@ -79,21 +88,22 @@ You can use this ZMK module with the following setup:
    CONFIG_ZMK_SETTINGS_RPC_STUDIO=y
    ```
 
-3. (Optional) Configure activity settings in your `<keyboard>.keymap` if you want default values:
+3. The selected core supplies the compiled idle and sleep defaults through
+   `CONFIG_ZMK_IDLE_TIMEOUT` and `CONFIG_ZMK_IDLE_SLEEP_TIMEOUT`. This module does
+   not define an activity devicetree node. Stored core activity settings may
+   override those defaults. The Web UI reads the effective reported values.
 
-   ```dts
-   / {
-       behaviors {
-           // Your keymap behaviors
-       };
-   };
-   ```
+The fork branch above contains this implementation; it does not deploy a Web UI.
+Use its prepared local Web build to exercise the reviewed client. The existing
+upstream PR for getter presence remains separate from this fork review branch.
 
 ## Development Guide
 
 ### Setup
 
-There are two west workspace layout options.
+Run dependency setup, builds and test runtimes inside Docker. Host entry points
+may launch containers and export results. There are two isolated west workspace
+layout options; use a fresh workspace rather than replacing shared `.west` data.
 
 #### Option 1: Download Dependencies in Parent Directory
 
@@ -102,9 +112,8 @@ This is West's standard approach. Choose this option if you want to reuse depend
 ```bash
 mkdir west-workspace
 cd west-workspace # This directory becomes the West workspace root (topdir)
-git clone <this repository>
-# rm -r .west # If it exists, remove to reset workspace
-west init -l . --mf tests/west-test.yml
+git clone --branch codex/settings-rpc-review https://github.com/amgskobo/zmk-module-settings-rpc.git
+west init -l zmk-module-settings-rpc/west --mf west-test.yml
 west update --narrow
 west zephyr-export
 ```
@@ -124,14 +133,15 @@ west-workspace
   - your-other-repo
 ```
 
-You can switch between modules by removing `west-workspace/.west` and re-executing `west init ...`.
+Use another fresh workspace when selecting a different owner; keep existing
+workspace metadata and prepared dependency revisions intact.
 
 #### Option 2: Download Dependencies in ./dependencies (Enabled in Dev Container)
 
 Choose this option if you want to download dependencies under this directory (similar to `node_modules` in npm). This option is useful for specifying cache targets in CI. The layout is easier to manage if you want to isolate dependencies.
 
 ```bash
-git clone <this repository>
+git clone --branch codex/settings-rpc-review https://github.com/amgskobo/zmk-module-settings-rpc.git
 cd <cloned directory>
 west init -l west --mf west-test-standalone.yml
 # If you use the dev container, start from the commands below.
@@ -175,8 +185,8 @@ presence and values (including both
 timeouts disabled and uint32 limits), GetAll notifications, valid writes,
 setter failures and malformed/unsupported requests. It also verifies applying
 relayed settings, ignoring self-originated changes and reporting peripheral
-settings. Standalone, split-central (with/without relay) and peripheral variants
-run optimized and under ASan/UBSan. It does not test Studio transport,
+settings. Standalone, split-central (with/without relay and with sleep disabled) and
+peripheral variants run optimized and under ASan/UBSan: ten variants in total. It does not test Studio transport,
 radio delivery, real event scheduling or timeout validation policy.
 
 ```bash
@@ -186,13 +196,41 @@ python3 tests/activity/run.py
 NANOPB_SOURCE=/path/to/nanopb python3 tests/activity/run.py
 ```
 
+`bash tests/run-host-docker.sh` dispatches that same owner check directly when
+already inside a prepared Docker workspace, without nesting Docker. From a host
+shell, explicitly select a preflighted named dependency volume and nanopb path:
+
+```bash
+export ZMK_DOCKER_CACHE_VOLUME='<prepared-dependency-volume>'
+export ZMK_NANOPB_RELATIVE_PATH=modules/lib/nanopb
+# Optional: override the pinned CI SDK image with another reviewed digest.
+export ZMK_TEST_IMAGE='<prepared-image>@sha256:<digest>'
+bash tests/run-host-docker.sh
+```
+
+The host entry mounts owner and dependency inputs read-only, disables the
+network, and defaults to two CPUs and 4 GiB. `ZMK_TEST_CPUS` and
+`ZMK_TEST_MEMORY` select the shared test budget. Prepare the selected image's
+compiler/Python/protobuf environment and verify nanopb's exact revision before
+the run. The entry performs no dependency installation or fetch. Registration
+fixtures retain both native_posix_64 and native_sim filenames; the selected DYA
+matrix uses native_sim, while stock ZMK remains NOT APPLICABLE.
+
 The `./tests` directory contains test configurations for POSIX to verify module functionality and configurations for the Xiao board to confirm builds work correctly.
+
+Activity report notifications send one report per low-priority work invocation
+and resubmit at the queue tail. The four-report queue retains its drop-newest
+policy. For changes to this work budget, also run the
+[real-kernel sender check](tests/report-sender/README.md) with the resolved
+Zephyr 4.1 workspace: `python3 tests/report-sender/run.py`. A synchronous
+transport call can still stall that queue; the check does not prove radio or
+split delivery.
 
 Tests can be executed with the following command:
 
 ```bash
 # Run all test cases and verify results
-python -m unittest
+python -m unittest discover -s tests -p test_owner.py
 ```
 
 If you want to execute West commands manually, use the following (note: for zmk-build, results are not verified):
@@ -209,11 +247,12 @@ west zmk-test tests -m .
 
 **Web UI Tests**
 
-The `./web` directory includes Jest tests. See [./web/README.md](./web/README.md#testing) for more details.
+The Web scripts dispatch canonical Jest fixtures from `tests/web/`. See the
+[Web development guide](./web/README.md#development) for schema generation and
+test/build commands.
 
 ```bash
-cd web
-npm test
+bash tests/run-web.sh
 ```
 
 ## Publishing Web UI

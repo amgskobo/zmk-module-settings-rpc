@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "host": [
+    "bash",
+    "tests/run-host-docker.sh"
+  ],
+  "contracts": [
+    {
+      "fixture": "tests/activity/handler_test.c",
+      "asserts": "Complete production handler/event units: nanopb request dispatch and wire presence/values; GetAll/notification/Set errors and recovery; relayed/self event application; one report per low-priority work invocation (order kept, newest dropped when full); zero/uint32 boundaries and sequential buffer reset. Five role/sleep/relay variants, O2 and ASan/UBSan."
+    },
+    {
+      "fixture": "tests/report-sender/main.c",
+      "command": "python3 tests/report-sender/run.py",
+      "backend": "Resolved Zephyr 4.1 native_sim/native/64",
+      "asserts": "Real kernel workqueue/message queue: full and continuously refilled report queue; exact protobuf source/idle/sleep values in order; queued peer runs after one report. Identical binary runs three times per scenario; assertion failure, timeout or crash fails."
+    }
+  ],
+  "limits": "Activity/framework/event/Studio boundaries are controlled. The focused native fixture proves kernel queue scheduling, not physical USB/BLE/split delivery or a deadline for a synchronous send. Validation guards refuse before mutation, including a missing Set submessage. Setter/storage failures and durable multi-device application remain separate boundaries."
+}
