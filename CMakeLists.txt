@@ -8,8 +8,7 @@ if(CONFIG_ZMK_SETTINGS_RPC)
     target_sources(app PRIVATE src/events/activity_settings_report.c)
 
     if(CONFIG_ZMK_SETTINGS_RPC_STUDIO)
-        file(GLOB_RECURSE C_FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/studio/*.c)
-        target_sources(app PRIVATE ${C_FILES})
+        target_sources(app PRIVATE src/studio/settings_rpc_handler.c)
 
         list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
         include(nanopb)
@@ -18,9 +17,8 @@ if(CONFIG_ZMK_SETTINGS_RPC)
 
         # NOTE: adding to app target directly causes build issues, so we create a library instead
         zephyr_library()
-        file(GLOB_RECURSE PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/*.proto)
-
-        nanopb_generate_cpp(proto_srcs proto_hdrs RELPATH ${CMAKE_CURRENT_SOURCE_DIR} ${PROTO_FILES})
+        nanopb_generate_cpp(proto_srcs proto_hdrs RELPATH ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/proto/zmk/settings/core.proto)
         target_include_directories(${ZEPHYR_CURRENT_LIBRARY} PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
         target_sources(${ZEPHYR_CURRENT_LIBRARY} PRIVATE ${proto_srcs} ${proto_hdrs})
 

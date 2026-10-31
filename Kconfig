@@ -6,6 +6,9 @@ if ZMK_SETTINGS_RPC
 config ZMK_SETTINGS_RPC_STUDIO
     bool "Enable ZMK core settings custom Studio RPC"
     depends on ZMK_STUDIO
+    # Peripheral reports are sent as Studio notifications from this queue,
+    # never from the system work queue they arrive on.
+    select ZMK_LOW_PRIORITY_WORK_QUEUE
 
 config ZMK_SPLIT_RELAY_EVENT
     bool "Enable event relay between central and peripheral for split keyboards"
@@ -26,3 +29,11 @@ config ZMK_SPLIT_RELAY_EVENT_DATA_LEN
     depends on ZMK_SPLIT_RELAY_EVENT
 
 endif
+
+config ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL
+    int "zmk-module-settings-rpc log level (0 off, 1 error, 2 warning, 3 info, 4 debug)"
+    range 0 4
+    default 3
+    help
+      Logs contain operational state and numeric diagnostics, never input
+      contents, user labels, peer addresses or authentication material.

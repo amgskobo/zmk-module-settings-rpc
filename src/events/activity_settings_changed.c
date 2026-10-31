@@ -9,9 +9,18 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_settings_changed.h>
 
-LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
-
 ZMK_EVENT_IMPL(zmk_activity_settings_changed);
+
+// Only a split peripheral applies settings relayed from the central. The
+// central sets its own timeouts directly and has no reason to take them from a
+// peripheral, so it neither receives nor applies this event.
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && !IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+
+#ifndef CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL
+#define CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL 3
+#endif
+LOG_MODULE_REGISTER(zmk_module_settings_rpc_activity_settings_changed,
+                    CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL);
 
 /**
  * Event listener to apply activity settings when relay event is received
@@ -45,3 +54,5 @@ ZMK_SUBSCRIPTION(activity_settings_apply, zmk_activity_settings_changed);
 ZMK_RELAY_EVENT_HANDLE(zmk_activity_settings_changed, as, source);
 
 #endif  // IS_ENABLED(CONFIG_ZMK_SPLIT_RELAY_EVENT)
+
+#endif  // IS_ENABLED(CONFIG_ZMK_SPLIT) && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL

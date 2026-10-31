@@ -9,7 +9,11 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_settings_report.h>
 
-LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+#ifndef CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL
+#define CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL 3
+#endif
+LOG_MODULE_REGISTER(zmk_module_settings_rpc_activity_settings_report,
+                    CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL);
 
 ZMK_EVENT_IMPL(zmk_activity_settings_request);
 ZMK_EVENT_IMPL(zmk_activity_settings_report);

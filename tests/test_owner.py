@@ -1,14 +1,26 @@
 import platform
-import shutil
+import os
+import tempfile
 import subprocess
 import unittest
 from pathlib import Path
 
 from dataclasses import dataclass
 
-THIS_DIR = Path(__file__).parent.resolve()
+from native_verifier import verify_native
+from test_native_verifier import NativeVerifierContract as NativeVerifierContract
+
+from test_build_budget import BuildBudgetContract as BuildBudgetContract
+
+THIS_DIR = Path(__file__).resolve().parent.parent
+
 
 def run_west(args: list[str]) -> subprocess.CompletedProcess[str]:
+    if args and args[0] == "zmk-build":
+        parallelism = int(os.environ.get("OWNER_TEST_BUILD_PARALLELISM", "1"))
+        if parallelism < 1:
+            raise ValueError("OWNER_TEST_BUILD_PARALLELISM must be a positive integer")
+        args = [args[0], "--parallelism", str(parallelism), *args[1:]]
     return subprocess.run(
         ["west", *args],
         capture_output=True,
@@ -16,9 +28,11 @@ def run_west(args: list[str]) -> subprocess.CompletedProcess[str]:
         cwd=THIS_DIR,
     )
 
+
 @dataclass
 class NotFound:
     text: str
+
 
 class WestCommandsTests(unittest.TestCase):
     WEST_TOPDIR: Path
@@ -26,20 +40,30 @@ class WestCommandsTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.WEST_TOPDIR = Path(subprocess.run(
-            ["west", "topdir"],
-            capture_output=True,
-            text=True,
-        ).stdout.strip())
-        cls.BUILD_DIR = cls.WEST_TOPDIR / "build"
+        cls.WEST_TOPDIR = Path(
+            subprocess.run(
+                ["west", "topdir"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        requested_output = os.environ.get("OWNER_TEST_OUTPUT")
+        if requested_output:
+            cls.BUILD_DIR = Path(requested_output).resolve()
+            cls.BUILD_DIR.mkdir(parents=True, exist_ok=False)
+        else:
+            cls.BUILD_DIR = Path(tempfile.mkdtemp(prefix=THIS_DIR.name + "-tests-"))
+        print(f"Owner test output: {cls.BUILD_DIR}", flush=True)
 
-    @unittest.skipUnless(platform.system() == "Linux", "zmk-test is only supported on Linux")
+    @unittest.skipUnless(
+        platform.system() == "Linux", "zmk-test is only supported on Linux"
+    )
     def test_zmk_test(self):
         tests_build = self.BUILD_DIR / "tests"
-        shutil.rmtree(tests_build, ignore_errors=True)
 
-        result = run_west(["zmk-test", "tests", '-m', '.'])
+        result = run_west(["zmk-test", "tests", "-m", ".", "-d", str(tests_build)])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        verify_native(tests_build, THIS_DIR / "tests")
         self.assertIn("PASS: studio", result.stdout)
         self.assertNotIn("FAILED:", result.stdout + result.stderr)
 
@@ -56,13 +80,23 @@ class WestCommandsTests(unittest.TestCase):
                 "# CONFIG_ZMK_STUDIO is not set",
                 "CONFIG_ZMK_SETTINGS_RPC=y",
                 NotFound("CONFIG_ZMK_SETTINGS_RPC_STUDIO"),
-            ]
+            ],
         }
 
-        for artifact in artifacts_and_expected_config.keys():
-            shutil.rmtree(self.BUILD_DIR / artifact, ignore_errors=True)
-
-        result = run_west(["zmk-build", "tests/zmk-config/config", "-m", "tests/zmk-config", ".", "-q"])
+        result = run_west(
+            [
+                "zmk-build",
+                "tests/zmk-config/config",
+                "-m",
+                "tests/zmk-config",
+                ".",
+                "-q",
+                "-P",
+                "1",
+                "-d",
+                str(self.BUILD_DIR),
+            ]
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         for artifact, entries in artifacts_and_expected_config.items():
@@ -72,11 +106,16 @@ class WestCommandsTests(unittest.TestCase):
             for entry in entries:
                 if isinstance(entry, NotFound):
                     if entry.text in config_text:
-                        self.fail(f"{entry.text} found in {config_path} for {artifact}, but it should not be present")
+                        self.fail(
+                            f"{entry.text} found in {config_path} for {artifact}, but it should not be present"
+                        )
                 else:
                     if entry not in config_text:
                         self.fail(f"{entry} not found in {config_path} for {artifact}")
-            self.assertTrue((config_path.parent / "zmk.uf2").exists(), f"{artifact} zmk.uf2 is missing in {config_path.parent}")
+            self.assertTrue(
+                (config_path.parent / "zmk.uf2").exists(),
+                f"{artifact} zmk.uf2 is missing in {config_path.parent}",
+            )
 
     def test_zmk_build_split(self):
         artifacts_and_expected_config: dict[str, list[str | NotFound]] = {
@@ -89,27 +128,42 @@ class WestCommandsTests(unittest.TestCase):
                 "# CONFIG_ZMK_STUDIO is not set",
                 "CONFIG_ZMK_SETTINGS_RPC=y",
                 NotFound("CONFIG_ZMK_SETTINGS_RPC_STUDIO"),
-            ]
+            ],
         }
 
-        for artifact in artifacts_and_expected_config.keys():
-            shutil.rmtree(self.BUILD_DIR / artifact, ignore_errors=True)
-
-        result = run_west(["zmk-build", "tests/split-config/config", "-m", "tests/split-config", ".", "-q"])
+        result = run_west(
+            [
+                "zmk-build",
+                "tests/split-config/config",
+                "-m",
+                "tests/split-config",
+                ".",
+                "-q",
+                "-P",
+                "1",
+                "-d",
+                str(self.BUILD_DIR / "split"),
+            ]
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         for artifact, entries in artifacts_and_expected_config.items():
-            config_path = self.BUILD_DIR / artifact / "zephyr" / ".config"
+            config_path = self.BUILD_DIR / "split" / artifact / "zephyr" / ".config"
             self.assertTrue(config_path.exists(), f"{artifact} .config is missing")
             config_text = config_path.read_text()
             for entry in entries:
                 if isinstance(entry, NotFound):
                     if entry.text in config_text:
-                        self.fail(f"{entry.text} found in {config_path} for {artifact}, but it should not be present")
+                        self.fail(
+                            f"{entry.text} found in {config_path} for {artifact}, but it should not be present"
+                        )
                 else:
                     if entry not in config_text:
                         self.fail(f"{entry} not found in {config_path} for {artifact}")
-            self.assertTrue((config_path.parent / "zmk.uf2").exists(), f"{artifact} zmk.uf2 is missing in {config_path.parent}")
+            self.assertTrue(
+                (config_path.parent / "zmk.uf2").exists(),
+                f"{artifact} zmk.uf2 is missing in {config_path.parent}",
+            )
 
 
 if __name__ == "__main__":

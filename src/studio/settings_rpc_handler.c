@@ -8,14 +8,26 @@
 
 #include <pb_decode.h>
 #include <pb_encode.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zmk/activity.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_settings_changed.h>
 #include <zmk/events/activity_settings_report.h>
 #include <zmk/settings/core.pb.h>
+#include <zmk/studio/core.h>
 #include <zmk/studio/custom.h>
-LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+#include <zmk/workqueue.h>
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_RELAY_EVENT)
+// Declares zmk_split_central_send_relay_event(), which
+// ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL below calls.
+#include <zmk/split/central.h>
+#endif
+#ifndef CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL
+#define CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL 3
+#endif
+LOG_MODULE_REGISTER(zmk_module_settings_rpc_settings_rpc_handler,
+                    CONFIG_ZMK_MODULE_SETTINGS_RPC_LOG_LEVEL);
 
 /**
  * Metadata for the custom subsystem.
@@ -99,13 +111,23 @@ static bool settings_rpc_handle_request(
             rc = -1;
     }
 
-    if (rc != 0) {
+    // A handler that already explained its refusal keeps its own message.
+    if (rc != 0 && resp->which_response_type != zmk_settings_Response_error_tag) {
         zmk_settings_ErrorResponse err = zmk_settings_ErrorResponse_init_zero;
         snprintf(err.message, sizeof(err.message), "Failed to process request");
         resp->which_response_type = zmk_settings_Response_error_tag;
         resp->response_type.error = err;
     }
     return true;
+}
+
+static int set_error_response(zmk_settings_Response *resp, const char *message,
+                              int rc) {
+    zmk_settings_ErrorResponse err = zmk_settings_ErrorResponse_init_zero;
+    snprintf(err.message, sizeof(err.message), "%s", message);
+    resp->which_response_type = zmk_settings_Response_error_tag;
+    resp->response_type.error = err;
+    return rc;
 }
 
 /**
@@ -193,7 +215,7 @@ static int handle_get_activity_settings(
         zmk_settings_GetActivitySettingsResponse_init_zero;
 
     // Get current settings from ZMK activity subsystem
-    result.has_settings     = true;
+    result.has_settings      = true;
     result.settings.idle_ms  = zmk_activity_get_idle_ms();
     result.settings.sleep_ms = zmk_activity_get_sleep_ms();
 
@@ -205,6 +227,10 @@ static int handle_get_activity_settings(
     return 0;
 }
 
+// A shorter sleep timeout would power a battery-run keyboard off seconds after
+// each key press, and only USB power keeps it awake long enough to fix that.
+#define SETTINGS_RPC_MIN_SLEEP_MS 60000
+
 /**
  * Handle SetActivitySettings request - updates sleep/idle timeouts
  * and propagates to peripherals via events
@@ -212,6 +238,38 @@ static int handle_get_activity_settings(
 static int handle_set_activity_settings(
     const zmk_settings_SetActivitySettingsRequest *req,
     zmk_settings_Response *resp) {
+    // The timeouts are saved to flash and decide when the keyboard idles and
+    // sleeps for every host, and ZMK accepts any value. Only an unlocked Studio
+    // may change them; the getters stay available while locked, which is why
+    // the subsystem itself remains UNSECURED.
+    if (zmk_studio_core_get_lock_state() !=
+        ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED) {
+        LOG_WRN("Activity settings change refused: Studio is locked");
+        return set_error_response(resp, "Unlock required", -EACCES);
+    }
+    // An absent submessage decodes as zeros, which would turn both idle and
+    // sleep off rather than leave them unchanged.
+    if (!req->has_settings) {
+        LOG_WRN("Activity settings change refused: no settings in request");
+        return set_error_response(resp, "Missing settings", -EINVAL);
+    }
+#if IS_ENABLED(CONFIG_ZMK_SLEEP)
+    // Zero still turns sleep off.
+    if (req->settings.sleep_ms != 0 &&
+        req->settings.sleep_ms < SETTINGS_RPC_MIN_SLEEP_MS) {
+        LOG_WRN("Activity settings change refused: sleep timeout too short");
+        return set_error_response(resp, "Sleep too short", -EINVAL);
+    }
+#else
+    // Without sleep support ZMK cannot store a sleep timeout. Refuse a change
+    // before the idle timeout is touched, so a failed request changes nothing
+    // here and nothing is left out of the relay to the peripherals.
+    if (req->settings.sleep_ms != zmk_activity_get_sleep_ms()) {
+        LOG_WRN("Activity settings change refused: sleep is not supported");
+        return set_error_response(resp, "Sleep not supported", -ENOTSUP);
+    }
+#endif
+
     LOG_DBG("Received set activity settings request: idle=%d ms, sleep=%d ms",
             req->settings.idle_ms, req->settings.sleep_ms);
 
@@ -223,11 +281,13 @@ static int handle_set_activity_settings(
         success = false;
     }
 
+#if IS_ENABLED(CONFIG_ZMK_SLEEP)
     // Update sleep timeout
     if (!zmk_activity_set_sleep_ms(req->settings.sleep_ms)) {
         LOG_ERR("Failed to set sleep timeout to %d ms", req->settings.sleep_ms);
         success = false;
     }
+#endif
 
     if (success) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_RELAY_EVENT)
@@ -301,9 +361,50 @@ ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL(zmk_activity_settings_request, srq, );
 
 ZMK_RELAY_EVENT_HANDLE(zmk_activity_settings_report, srp, source);
 
+/*
+ * A peripheral's report reaches this listener as a relayed event, raised on the
+ * system work queue by the split central. Sending the Studio notification from
+ * here would write the Studio transport on that queue: while the RPC thread is
+ * in the middle of a reply it holds the transport mutex and waits for a
+ * Bluetooth drain that itself runs on the system work queue, so the queue would
+ * wait on the mutex for good. The report is queued and sent from ZMK's
+ * low-priority queue instead, as the other Studio modules do for relayed
+ * events. Reports are state snapshots; a full queue drops the newest, and the
+ * client asks again.
+ */
+#define ACTIVITY_REPORT_QUEUE_SIZE 4
+
+struct activity_report_item {
+    uint32_t idle_ms;
+    uint32_t sleep_ms;
+    uint32_t source;
+};
+
+K_MSGQ_DEFINE(zmk_settings_rpc_report_msgq, sizeof(struct activity_report_item),
+              ACTIVITY_REPORT_QUEUE_SIZE, 4);
+
+static void activity_report_work_handler(struct k_work *work);
+static K_WORK_DEFINE(activity_report_work, activity_report_work_handler);
+
+static void activity_report_work_handler(struct k_work *work) {
+    (void)work;
+
+    struct activity_report_item item;
+    if (k_msgq_get(&zmk_settings_rpc_report_msgq, &item, K_NO_WAIT) == 0) {
+        // One dispatch per invocation lets other queued work run even when
+        // reports keep arriving during notification encoding/transport waits.
+        send_activity_settings_notification(item.idle_ms, item.sleep_ms,
+                                            item.source);
+    }
+    if (k_msgq_num_used_get(&zmk_settings_rpc_report_msgq) > 0) {
+        k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(),
+                               &activity_report_work);
+    }
+}
+
 /**
  * Event listener to handle settings reports from peripherals
- * Send them as notifications to the web UI
+ * Queue them to be sent as notifications to the web UI
  */
 static int activity_settings_report_listener(const zmk_event_t *eh) {
     struct zmk_activity_settings_report *ev =
@@ -315,8 +416,18 @@ static int activity_settings_report_listener(const zmk_event_t *eh) {
     LOG_DBG("Received settings report from peripheral %d: idle=%d, sleep=%d",
             ev->source, ev->idle_ms, ev->sleep_ms);
 
-    // Send notification to web UI
-    send_activity_settings_notification(ev->idle_ms, ev->sleep_ms, ev->source);
+    struct activity_report_item item = {
+        .idle_ms  = ev->idle_ms,
+        .sleep_ms = ev->sleep_ms,
+        .source   = ev->source,
+    };
+    if (k_msgq_put(&zmk_settings_rpc_report_msgq, &item, K_NO_WAIT) != 0) {
+        LOG_WRN("Settings report from peripheral %d dropped: queue full",
+                ev->source);
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+    k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(),
+                           &activity_report_work);
 
     return ZMK_EV_EVENT_BUBBLE;
 }

@@ -42,7 +42,8 @@ def main():
             str(root / "proto/zmk/settings/core.proto"),
         ], check=True, timeout=60)
         for name in ("zephyr/kernel.h", "zephyr/logging/log.h", "zmk/activity.h",
-                     "zmk/event_manager.h", "zmk/studio/custom.h"):
+                     "zmk/event_manager.h", "zmk/split/central.h", "zmk/studio/core.h",
+                     "zmk/studio/custom.h", "zmk/workqueue.h"):
             header = work / name
             header.parent.mkdir(parents=True, exist_ok=True)
             header.write_text("/* ZMK interfaces supplied by the host harness. */\n")
@@ -52,10 +53,12 @@ def main():
             "sanitized": ["-O1", "-g", "-fno-omit-frame-pointer",
                           "-fsanitize=address,undefined", "-fno-sanitize-recover=all"],
         }
-        for role, split, central, relay, studio in (("standalone", 0, 0, 0, 1),
-                                                    ("central", 1, 1, 1, 1),
-                                                    ("central-no-relay", 1, 1, 0, 1),
-                                                    ("peripheral", 1, 0, 1, 0)):
+        for role, split, central, relay, studio, sleep in (
+                ("standalone", 0, 0, 0, 1, 1),
+                ("central", 1, 1, 1, 1, 1),
+                ("central-no-relay", 1, 1, 0, 1, 1),
+                ("central-no-sleep", 1, 1, 1, 1, 0),
+                ("peripheral", 1, 0, 1, 0, 1)):
             for label, flags in variants.items():
                 binary = work / f"activity-{role}-{label}"
                 subprocess.run([
@@ -65,6 +68,7 @@ def main():
                     "-DPB_WITHOUT_64BIT=1", f"-DCONFIG_ZMK_SPLIT={split}",
                     f"-DCONFIG_ZMK_SPLIT_RELAY_EVENT={relay}",
                     f"-DCONFIG_ZMK_SPLIT_ROLE_CENTRAL={central}",
+                    f"-DCONFIG_ZMK_SLEEP={sleep}",
                     f"-DTEST_RPC={studio}", f'-DTEST_ROLE="{role}"',
                     f'-DCHANGED_SOURCE="{root / "src/events/activity_settings_changed.c"}"',
                     f'-DREPORT_SOURCE="{root / "src/events/activity_settings_report.c"}"',
