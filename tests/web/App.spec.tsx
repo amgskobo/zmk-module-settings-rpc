@@ -9,7 +9,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { setupZMKMocks } from "@cormoran/zmk-studio-react-hook/testing";
-import App from "../src/App";
+import { Response } from "../../web/src/proto/zmk/settings/core";
+import App from "../../web/src/App";
 
 // Mock the ZMK client
 jest.mock("@zmkfirmware/zmk-studio-ts-client", () => ({
@@ -28,10 +29,10 @@ describe("App Component", () => {
 
       // Check for the main title in the header
       expect(
-        screen.getByRole("heading", { level: 1, name: /ZMK Core Settings/i })
+        screen.getByRole("heading", { level: 1, name: /ZMK Core Settings/i }),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(/Configure sleep, idle, and other ZMK settings/i)
+        screen.getByText(/Configure sleep, idle, and other ZMK settings/i),
       ).toBeInTheDocument();
     });
 
@@ -63,6 +64,18 @@ describe("App Component", () => {
         deviceName: "Test Keyboard",
         subsystems: ["zmk__settings"],
       });
+      // Activity Settings fetches after discovery; return a real encoded reply.
+      mocks.call_rpc.mockResolvedValue({
+        custom: {
+          call: {
+            payload: Response.encode(
+              Response.create({
+                getAllActivitySettings: { requestSent: true },
+              }),
+            ).finish(),
+          },
+        },
+      });
 
       // Mock the serial connect function to return our mock transport
       const { connect: serial_connect } =
@@ -83,7 +96,7 @@ describe("App Component", () => {
       // Wait for connection to complete and verify connected state
       await waitFor(() => {
         expect(
-          screen.getByText(/Connected to: Test Keyboard/i)
+          screen.getByText(/Connected to: Test Keyboard/i),
         ).toBeInTheDocument();
       });
 
@@ -92,7 +105,7 @@ describe("App Component", () => {
 
       // Verify Activity Settings section is visible
       expect(
-        screen.getByText(/Activity Settings \(Sleep\/Idle Timeout\)/i)
+        screen.getByText(/Activity Settings \(Sleep\/Idle Timeout\)/i),
       ).toBeInTheDocument();
     });
   });

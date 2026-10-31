@@ -1,17 +1,27 @@
+import { errorKind } from "./logPrivacy";
 /**
  * Activity Settings Component
  * Allows getting and setting sleep/idle timeout settings
  */
 
-import { useContext, useState, useEffect, useMemo } from "react";
-import {
-  ZMKCustomSubsystem,
-  ZMKAppContext,
-} from "@cormoran/zmk-studio-react-hook";
+import { useContext, useState, useEffect, useMemo, useRef } from "react";
+import { ZMKAppContext } from "@cormoran/zmk-studio-react-hook";
+import { SettingsRpcClient } from "./settingsRpc";
 import { Request, Response, Notification } from "./proto/zmk/settings/core";
 
 // Custom subsystem identifier - must match firmware registration
 export const SUBSYSTEM_IDENTIFIER = "zmk__settings";
+
+const MAX_TIMEOUT_MS = 0xffffffff;
+const TIMEOUT_ERROR = "Timeouts must be whole numbers from 0 to 4294967295 ms.";
+
+function parseTimeout(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= MAX_TIMEOUT_MS
+    ? parsed
+    : null;
+}
 
 interface DeviceSettings {
   source: number;
@@ -27,17 +37,41 @@ export interface ActivitySettingsProps {
   autoFetch?: boolean;
 }
 
-export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
+const connectionIds = new WeakMap<object, number>();
+let nextConnectionId = 1;
+export function ActivitySettings(props: ActivitySettingsProps) {
+  const app = useContext(ZMKAppContext);
+  const connection = app?.state.connection;
+  let identity = 0;
+  if (connection) {
+    identity = connectionIds.get(connection) ?? nextConnectionId++;
+    connectionIds.set(connection, identity);
+  }
+  const index = app?.findSubsystem(SUBSYSTEM_IDENTIFIER)?.index;
+  const catalog = JSON.stringify(app?.state.customSubsystems?.subsystems ?? []);
+  const key = `${identity}:${index ?? "missing"}:${catalog}`;
+  return <ActivitySettingsSession key={key} {...props} />;
+}
+
+function ActivitySettingsSession({ autoFetch = true }: ActivitySettingsProps) {
   const zmkApp = useContext(ZMKAppContext);
-  const [idleMs, setIdleMs] = useState<number>(0);
-  const [sleepMs, setSleepMs] = useState<number>(0);
+  const [idleMs, setIdleMs] = useState("0");
+  const [sleepMs, setSleepMs] = useState("0");
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [allDeviceSettings, setAllDeviceSettings] = useState<DeviceSettings[]>(
     []
   );
-  const [showSyncWarning, setShowSyncWarning] = useState(false);
+  const draftDirty = useRef(false);
+  const draftRevision = useRef(0);
+  const showSyncWarning =
+    allDeviceSettings.length > 1 &&
+    allDeviceSettings.some(
+      (setting) =>
+        setting.idleMs !== allDeviceSettings[0].idleMs ||
+        setting.sleepMs !== allDeviceSettings[0].sleepMs
+    );
 
   // Memoize subsystem to prevent re-rendering on every render
   const subsystem = useMemo(
@@ -46,15 +80,68 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
     [zmkApp?.state.customSubsystems]
   );
 
+  // Responses and delayed refreshes belong to this connection/subsystem.
+  // A new context can be rendered before the previous effect is cleaned up.
+  const connection = zmkApp?.state.connection;
+  const subsystemIndex = subsystem?.index;
+  const session = useMemo(
+    () => ({
+      connection,
+      subsystemIndex,
+      active: true,
+      client: new SettingsRpcClient(connection, subsystemIndex),
+      requestId: 0,
+      refreshTimer: null as ReturnType<typeof setTimeout> | null,
+    }),
+    [connection, subsystemIndex]
+  );
+  const currentSession = useRef(session);
+  currentSession.current = session;
+  const isCurrentSession = () =>
+    session.active && currentSession.current === session;
+  const beginRequest = () => {
+    if (session.refreshTimer !== null) {
+      clearTimeout(session.refreshTimer);
+      session.refreshTimer = null;
+    }
+    const requestId = ++session.requestId;
+    return () => isCurrentSession() && session.requestId === requestId;
+  };
+  useEffect(() => {
+    session.active = true;
+    session.client.activate();
+    draftDirty.current = false;
+    setIdleMs("0");
+    setSleepMs("0");
+    setAllDeviceSettings([]);
+    setIsLoading(false);
+    setMessage(null);
+    setError(null);
+    return () => {
+      session.active = false;
+      session.client.dispose();
+      session.requestId++;
+      if (session.refreshTimer !== null) clearTimeout(session.refreshTimer);
+      session.refreshTimer = null;
+    };
+  }, [session]);
+
   // Subscribe to notifications
   useEffect(() => {
     if (!zmkApp?.state.connection || !subsystem) return;
+    let subscribed = true;
     // Register notification handler
     const unsubscribe = zmkApp.onNotification({
       type: "custom",
       subsystemIndex: subsystem.index,
       callback: (notification) => {
-        if (!notification.payload) return;
+        if (
+          !subscribed ||
+          !session.active ||
+          currentSession.current !== session ||
+          !notification.payload
+        )
+          return;
         try {
           const decoded = Notification.decode(notification.payload);
           if (decoded.activitySettings?.settings) {
@@ -66,61 +153,63 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
             };
 
             setAllDeviceSettings((prev) => {
+              if (
+                !subscribed ||
+                !session.active ||
+                currentSession.current !== session
+              )
+                return prev;
               // Check if we already have settings from this source
               const filtered = prev.filter((s) => s.source !== settings.source);
               const updated = [...filtered, deviceSetting];
 
-              // Update central's displayed values with central's settings (source 0)
-              if (settings.source === 0) {
-                setIdleMs(settings.idleMs);
-                setSleepMs(settings.sleepMs);
-              }
-
-              // Check if all devices are in sync
-              const inSync = updated.every(
-                (s) =>
-                  s.idleMs === updated[0].idleMs &&
-                  s.sleepMs === updated[0].sleepMs
-              );
-              setShowSyncWarning(!inSync && updated.length > 1);
-
               return updated;
             });
+            // Reports stay live while an unsaved draft keeps its input values.
+            if (settings.source === 0 && !draftDirty.current) {
+              setIdleMs(String(settings.idleMs));
+              setSleepMs(String(settings.sleepMs));
+            }
           }
         } catch (err) {
-          console.error("Failed to decode notification:", err);
+          console.error("Failed to decode notification:", errorKind(err));
         }
       },
     });
     return () => {
+      subscribed = false;
       unsubscribe?.();
     };
-  }, [zmkApp, zmkApp?.state.connection, subsystem]);
+  }, [zmkApp, zmkApp?.state.connection, subsystem, session]);
 
   // Get current settings when component mounts or subsystem becomes available
   useEffect(() => {
     if (subsystem && zmkApp?.state.connection && autoFetch) {
-      getCurrentSettings();
+      const timer = window.setTimeout(() => void getCurrentSettings(), 0);
+      return () => window.clearTimeout(timer);
     }
+    // The keyed parent owns session identity; replay cancels the first timer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subsystem, zmkApp?.state.connection, autoFetch]);
+  }, [subsystemIndex, connection, autoFetch]);
 
   if (!zmkApp) return null;
 
-  const getCurrentSettings = async () => {
-    if (!zmkApp.state.connection || !subsystem) return;
+  const getCurrentSettings = async (replaceDraft = false) => {
+    if (!zmkApp.state.connection || !subsystem || !isCurrentSession()) return;
+    if (replaceDraft) {
+      draftDirty.current = false;
+      draftRevision.current++;
+    }
+    const isCurrentRequest = beginRequest();
 
     setIsLoading(true);
     setError(null);
     setMessage(null);
-    setAllDeviceSettings([]); // Clear previous device settings
-    setShowSyncWarning(false);
+    // Keep the last reported values while collecting replacements. A refresh
+    // acknowledgement does not establish that every peripheral is in sync.
 
     try {
-      const service = new ZMKCustomSubsystem(
-        zmkApp.state.connection,
-        subsystem.index
-      );
+      const service = session.client;
 
       // Request settings from all devices (central + peripherals)
       // This triggers notifications from each device
@@ -130,6 +219,7 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
 
       const payload = Request.encode(request).finish();
       const responsePayload = await service.callRPC(payload);
+      if (!isCurrentRequest()) return;
 
       if (responsePayload) {
         const resp = Response.decode(responsePayload);
@@ -144,50 +234,65 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
         }
       }
     } catch (err) {
-      console.error("Failed to get activity settings:", err);
+      if (!isCurrentRequest()) return;
+      console.error("Failed to get activity settings:", errorKind(err));
       setError(
         `Failed: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   };
 
   const syncAllDevices = async () => {
-    if (!zmkApp.state.connection || !subsystem) return;
+    if (!zmkApp.state.connection || !subsystem || !isCurrentSession()) return;
+
+    const idle = parseTimeout(idleMs);
+    const sleep = parseTimeout(sleepMs);
+    if (idle === null || sleep === null) {
+      setMessage(null);
+      setError(TIMEOUT_ERROR);
+      return;
+    }
+
+    const revision = draftRevision.current;
+    draftDirty.current = true;
+    const isCurrentRequest = beginRequest();
 
     setIsLoading(true);
     setError(null);
     setMessage(null);
 
     try {
-      const service = new ZMKCustomSubsystem(
-        zmkApp.state.connection,
-        subsystem.index
-      );
+      const service = session.client;
 
       // Apply central's current settings to all devices
       const request = Request.create({
         setActivitySettings: {
           settings: {
-            idleMs: idleMs,
-            sleepMs: sleepMs,
+            idleMs: idle,
+            sleepMs: sleep,
           },
         },
       });
 
       const payload = Request.encode(request).finish();
       const responsePayload = await service.callRPC(payload);
+      if (!isCurrentRequest()) return;
 
       if (responsePayload) {
         const resp = Response.decode(responsePayload);
 
         if (resp.setActivitySettings) {
           if (resp.setActivitySettings.success) {
-            setMessage("Settings synchronized across all devices!");
-            setShowSyncWarning(false);
-            // Refresh to verify sync
-            setTimeout(() => getCurrentSettings(), 500);
+            if (draftRevision.current === revision) draftDirty.current = false;
+            setMessage("Settings applied; refreshing device reports...");
+            // The central's acknowledgement does not confirm peripheral
+            // delivery. Keep the reported mismatch until fresh reports arrive.
+            session.refreshTimer = setTimeout(() => {
+              session.refreshTimer = null;
+              if (isCurrentRequest()) void getCurrentSettings();
+            }, 500);
           } else {
             setError("Failed to sync settings");
           }
@@ -196,45 +301,57 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
         }
       }
     } catch (err) {
-      console.error("Failed to sync settings:", err);
+      if (!isCurrentRequest()) return;
+      console.error("Failed to sync settings:", errorKind(err));
       setError(
         `Failed: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   };
 
   const updateSettings = async () => {
-    if (!zmkApp.state.connection || !subsystem) return;
+    if (!zmkApp.state.connection || !subsystem || !isCurrentSession()) return;
+
+    const idle = parseTimeout(idleMs);
+    const sleep = parseTimeout(sleepMs);
+    if (idle === null || sleep === null) {
+      setMessage(null);
+      setError(TIMEOUT_ERROR);
+      return;
+    }
+
+    const revision = draftRevision.current;
+    draftDirty.current = true;
+    const isCurrentRequest = beginRequest();
 
     setIsLoading(true);
     setError(null);
     setMessage(null);
 
     try {
-      const service = new ZMKCustomSubsystem(
-        zmkApp.state.connection,
-        subsystem.index
-      );
+      const service = session.client;
 
       const request = Request.create({
         setActivitySettings: {
           settings: {
-            idleMs: idleMs,
-            sleepMs: sleepMs,
+            idleMs: idle,
+            sleepMs: sleep,
           },
         },
       });
 
       const payload = Request.encode(request).finish();
       const responsePayload = await service.callRPC(payload);
+      if (!isCurrentRequest()) return;
 
       if (responsePayload) {
         const resp = Response.decode(responsePayload);
 
         if (resp.setActivitySettings) {
           if (resp.setActivitySettings.success) {
+            if (draftRevision.current === revision) draftDirty.current = false;
             setMessage("Settings updated successfully!");
           } else {
             setError("Failed to update settings");
@@ -244,12 +361,13 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
         }
       }
     } catch (err) {
-      console.error("Failed to set activity settings:", err);
+      if (!isCurrentRequest()) return;
+      console.error("Failed to set activity settings:", errorKind(err));
       setError(
         `Failed: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   };
 
@@ -314,15 +432,22 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
             id="idle-timeout"
             type="number"
             value={idleMs}
-            onChange={(e) => setIdleMs(parseInt(e.target.value) || 0)}
+            onChange={(e) => {
+              draftDirty.current = true;
+              draftRevision.current++;
+              setIdleMs(e.target.value);
+            }}
             disabled={isLoading}
             min="0"
-            step="1000"
+            max={MAX_TIMEOUT_MS}
+            step="1"
           />
           <small>
-            {idleMs === 0
-              ? "Disabled"
-              : `${(idleMs / 1000).toFixed(0)} seconds`}
+            {parseTimeout(idleMs) === null
+              ? "Enter a whole number of milliseconds"
+              : Number(idleMs) === 0
+                ? "Disabled"
+                : `${(Number(idleMs) / 1000).toFixed(0)} seconds`}
           </small>
         </div>
 
@@ -332,15 +457,22 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
             id="sleep-timeout"
             type="number"
             value={sleepMs}
-            onChange={(e) => setSleepMs(parseInt(e.target.value) || 0)}
+            onChange={(e) => {
+              draftDirty.current = true;
+              draftRevision.current++;
+              setSleepMs(e.target.value);
+            }}
             disabled={isLoading}
             min="0"
-            step="1000"
+            max={MAX_TIMEOUT_MS}
+            step="1"
           />
           <small>
-            {sleepMs === 0
-              ? "Disabled"
-              : `${(sleepMs / 60000).toFixed(1)} minutes`}
+            {parseTimeout(sleepMs) === null
+              ? "Enter a whole number of milliseconds"
+              : Number(sleepMs) === 0
+                ? "Disabled"
+                : `${(Number(sleepMs) / 60000).toFixed(1)} minutes`}
           </small>
         </div>
       </div>
@@ -349,7 +481,7 @@ export function ActivitySettings({ autoFetch = true }: ActivitySettingsProps) {
         <button
           className="btn btn-secondary"
           disabled={isLoading}
-          onClick={getCurrentSettings}
+          onClick={() => void getCurrentSettings(true)}
         >
           {isLoading ? "⏳ Loading..." : "🔄 Refresh"}
         </button>
