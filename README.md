@@ -233,6 +233,18 @@ Tests can be executed with the following command:
 python -m unittest discover -s tests -p test_owner.py
 ```
 
+For the focused activity-settings wire regression, run inside the ZMK build
+image with an explicit resolved nanopb checkout:
+
+```bash
+NANOPB_ROOT=/resolved/nanopb \
+  python3 -m unittest discover -s tests/review -p test_settings_wire.py -v
+```
+
+This encodes and decodes the production handler's response using the actual
+schema and nanopb codec. Activity getters are controlled; it is independent of
+the firmware, Web UI and physical transport tests.
+
 If you want to execute West commands manually, use the following (note: for zmk-build, results are not verified):
 
 ```bash
