@@ -35,9 +35,11 @@ static unsigned changed_subscriptions;
     if (strcmp(#event, "zmk_activity_settings_changed") == 0)                  \
       changed_subscriptions++;                                                 \
   }
+#if CONFIG_ZMK_SPLIT_RELAY_EVENT
 #define ZMK_RELAY_EVENT_CENTRAL_TO_PERIPHERAL(...)
 #define ZMK_RELAY_EVENT_PERIPHERAL_TO_CENTRAL(...)
 #define ZMK_RELAY_EVENT_HANDLE(...)
+#endif
 #include <zmk/events/activity_settings_changed.h>
 #include <zmk/events/activity_settings_report.h>
 
@@ -281,7 +283,8 @@ static const uint32_t values[][2] = {
     {1200, 3400}, {0, 0}, {0, 17}, {19, 0}, {UINT32_MAX, UINT32_MAX}};
 
 /* Only a split peripheral applies relayed settings and answers requests. */
-#if CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL
+#if CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL &&                      \
+    CONFIG_ZMK_SPLIT_RELAY_EVENT
 static void test_apply_event(void) {
   reset();
   zmk_event_t empty = {0};
@@ -615,7 +618,8 @@ static void test_report(void) {
 int main(void) {
   unsigned groups = 0;
   assert(changed_subscriptions ==
-         (CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL));
+         (CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL &&
+          CONFIG_ZMK_SPLIT_RELAY_EVENT));
 #if TEST_RPC
   test_get();
   test_get_all();
@@ -632,10 +636,17 @@ int main(void) {
 #endif
   (void)settings_rpc_meta;
 #endif
-#if CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL
+#if CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL &&                      \
+    CONFIG_ZMK_SPLIT_RELAY_EVENT
   test_apply_event();
   test_request_event();
   groups += 2;
+#endif
+#if CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL &&                      \
+    !CONFIG_ZMK_SPLIT_RELAY_EVENT
+  reset();
+  assert(changed_subscriptions == 0 && writes == 0 && report_events == 0);
+  groups++;
 #endif
   printf("activity settings: PASS variant=%s role=%s groups=%u\n", TEST_VARIANT,
          TEST_ROLE, groups);

@@ -83,8 +83,12 @@ the global container budget. Build and lint retain their separate package entrie
 ## Activity wire, sender and Web lifetime checks
 
 `bash tests/run-host-docker.sh` dispatches `tests/activity/run.py` inside the
-prepared container. Its ten optimized/ASan/UBSan variants retain standalone,
-central with/without relay, central without sleep and peripheral boundaries.
+prepared container. Its twelve optimized/ASan/UBSan variants retain standalone,
+central with/without relay, central without sleep and peripheral boundaries,
+including the relay-disabled peripheral. Each exact binary runs three times.
+The controlled relay macros are absent when relay is disabled, matching the
+selected core; real XIAO central/peripheral no-relay builds are also retained in
+the canonical owner matrix, with configuration assertions for disabled relay.
 The source includes missing-setting, locked, short-sleep and unsupported-sleep
 refusals, exact getter presence, notifications, setter failure/recovery and
 queue drop/recovery controls. A successful acknowledgement does not establish

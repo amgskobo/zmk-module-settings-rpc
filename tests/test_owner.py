@@ -129,6 +129,18 @@ class WestCommandsTests(unittest.TestCase):
                 "CONFIG_ZMK_SETTINGS_RPC=y",
                 NotFound("CONFIG_ZMK_SETTINGS_RPC_STUDIO"),
             ],
+            "right_no_relay": [
+                "CONFIG_ZMK_STUDIO=y",
+                "CONFIG_ZMK_SETTINGS_RPC=y",
+                "CONFIG_ZMK_SETTINGS_RPC_STUDIO=y",
+                "# CONFIG_ZMK_SPLIT_RELAY_EVENT is not set",
+            ],
+            "left_no_relay": [
+                "# CONFIG_ZMK_STUDIO is not set",
+                "CONFIG_ZMK_SETTINGS_RPC=y",
+                NotFound("CONFIG_ZMK_SETTINGS_RPC_STUDIO"),
+                "# CONFIG_ZMK_SPLIT_RELAY_EVENT is not set",
+            ],
         }
 
         result = run_west(

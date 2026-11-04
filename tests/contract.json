@@ -7,7 +7,7 @@
   "contracts": [
     {
       "fixture": "tests/activity/handler_test.c",
-      "asserts": "Complete production handler/event units: nanopb request dispatch and wire presence/values; GetAll/notification/Set errors and recovery; relayed/self event application; one report per low-priority work invocation (order kept, newest dropped when full); zero/uint32 boundaries and sequential buffer reset. Five role/sleep/relay variants, O2 and ASan/UBSan."
+      "asserts": "Complete production handler/event units: nanopb request dispatch and wire presence/values; GetAll/notification/Set errors and recovery; relayed/self event application; one report per low-priority work invocation (order kept, newest dropped when full); zero/uint32 boundaries and sequential buffer reset. Six role/sleep/relay variants including peripheral without relay, O2 and ASan/UBSan, each exact binary repeated three times. Relay macros are undefined in disabled variants, matching core."
     },
     {
       "fixture": "tests/report-sender/main.c",

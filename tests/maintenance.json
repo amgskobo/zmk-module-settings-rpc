@@ -26,5 +26,15 @@
     "contract": "Connection/index/catalog retirement, request deadline cleanup, delayed sync refresh cancellation, preserved unsaved drafts and explicit refresh replacement.",
     "regression": "Original editor: 13 failing cases and 8 positive controls; existing assertions retained with only mock-client import changes.",
     "limits": "Controlled RPC/DOM; no device-side cancellation, rollback or physical delivery acceptance."
+  },
+  "review_relay_configuration": {
+    "finding": "SR2",
+    "fixtures": [
+      "tests/activity/run.py",
+      "tests/activity/handler_test.c",
+      "tests/split-config/build.yaml"
+    ],
+    "contract": "Six role configurations, including both relay-disabled split roles, build/run with relay macros absent when disabled; optimized and ASan/UBSan binaries each execute three times. Both original split board targets remain and two no-relay targets are added.",
+    "limits": "Compile/API/codec configuration coverage; physical transport and power acceptance remain separate."
   }
 }

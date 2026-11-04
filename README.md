@@ -186,7 +186,9 @@ timeouts disabled and uint32 limits), GetAll notifications, valid writes,
 setter failures and malformed/unsupported requests. It also verifies applying
 relayed settings, ignoring self-originated changes and reporting peripheral
 settings. Standalone, split-central (with/without relay and with sleep disabled) and
-peripheral variants run optimized and under ASan/UBSan: ten variants in total. It does not test Studio transport,
+peripheral variants, including both split roles with relay disabled, run
+optimized and under ASan/UBSan: twelve variants in total, each repeated three
+times from a new process. It does not test Studio transport,
 radio delivery, real event scheduling or timeout validation policy.
 
 ```bash
