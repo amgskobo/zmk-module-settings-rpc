@@ -279,8 +279,11 @@ static void reset(void) {
 #endif
 #endif
 }
+#if TEST_RPC || (CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL &&         \
+                 CONFIG_ZMK_SPLIT_RELAY_EVENT)
 static const uint32_t values[][2] = {
     {1200, 3400}, {0, 0}, {0, 17}, {19, 0}, {UINT32_MAX, UINT32_MAX}};
+#endif
 
 /* Only a split peripheral applies relayed settings and answers requests. */
 #if CONFIG_ZMK_SPLIT && !CONFIG_ZMK_SPLIT_ROLE_CENTRAL &&                      \
