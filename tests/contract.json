@@ -7,13 +7,21 @@
   "contracts": [
     {
       "fixture": "tests/activity/handler_test.c",
-      "asserts": "Complete production handler/event units: nanopb request dispatch and wire presence/values; GetAll/notification/Set errors and recovery; relayed/self event application; one report per low-priority work invocation (order kept, newest dropped when full); zero/uint32 boundaries and sequential buffer reset. Six role/sleep/relay variants including peripheral without relay, O2 and ASan/UBSan, each exact binary repeated three times. Relay macros are undefined in disabled variants, matching core."
+      "asserts": "Complete production handler/event units: nanopb request dispatch and wire presence/values; GetAll/notification/Set errors and recovery; relayed/self event application; one report per low-priority work invocation (order kept, newest dropped when full); zero/uint32 boundaries and sequential buffer reset. Six role/sleep/relay variants including peripheral without relay, O2 and ASan/UBSan, each exact binary repeated three times. Relay macros are undefined in disabled variants, matching core. Select --artifacts or ACTIVITY_TEST_ARTIFACTS for fresh retained binary/hash/command/exit/time/raw-log evidence."
     },
     {
       "fixture": "tests/report-sender/main.c",
       "command": "python3 tests/report-sender/run.py",
       "backend": "Resolved Zephyr 4.1 native_sim/native/64",
       "asserts": "Real kernel workqueue/message queue: full and continuously refilled report queue; exact protobuf source/idle/sleep values in order; queued peer runs after one report. Identical binary runs three times per scenario; assertion failure, timeout or crash fails."
+    },
+    {
+      "fixture": "tests/web/responseValidation.spec.tsx",
+      "asserts": "Eighteen Refresh/Save/Sync response-admission cases with empty/unknown/wrong variant, negative acknowledgement, firmware error and truncated codec. Independent request cleanup, retained failed setter drafts, no failed synchronization refresh and later valid-response recovery. Ten fail the original editor; eight retain prior refusal/error behavior."
+    },
+    {
+      "fixture": "tests/test_activity_entry.py",
+      "asserts": "Nine infrastructure cases validate fresh evidence admission, default cleanup, actual compiler/process results and retained failures, pre-launch recording, raw stream order, no fabricated timeout/launch exits and exact host/prepared-container dispatch. The host rejects CLI artifact overrides (eight original-launcher failures) and resolved parent-symlink escapes from its results mount. Controls do not establish firmware behavior."
     }
   ],
   "limits": "Activity/framework/event/Studio boundaries are controlled. The focused native fixture proves kernel queue scheduling, not physical USB/BLE/split delivery or a deadline for a synchronous send. Validation guards refuse before mutation, including a missing Set submessage. Setter/storage failures and durable multi-device application remain separate boundaries."

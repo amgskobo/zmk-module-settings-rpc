@@ -26,6 +26,15 @@ acknowledges the submitted draft; it does not confirm delivery to every device.
 Retiring a client stops its UI work and follow-up requests. An RPC already
 handed to the transport may still take effect; retirement provides no rollback.
 
+Each operation requires its matching response variant. Empty payloads, unknown
+variants and responses for a different operation produce an error and release
+the request deadline. A valid `request_sent=false` acknowledgement is displayed
+as a refused report request. Firmware error messages and negative setter
+acknowledgements remain separate refusals. Failed Save or Sync operations keep
+the draft and do not schedule a synchronization refresh; a later valid request
+can recover. Save and Sync share the setter implementation; Sync additionally
+requests updated device reports after a successful acknowledgement.
+
 Timeout edits remain text until save or synchronization. Both actions accept
 whole decimal milliseconds from 0 through 4294967295; 0 disables that timeout.
 Empty fields, negative/fractional values, exponent notation and out-of-range
@@ -80,11 +89,23 @@ Console failures include a fixed operation label and an allowlisted error catego
 Messages, stacks, causes, arbitrary error names, profile/device names, addresses,
 setting keys, prefixes, and values are not console arguments. UI errors and
 intentional setting/profile displays retain their existing behavior. Individual RPC payloads and notifications are not console diagnostics.
-The Vite plugin also sanitizes executable console output in the two locked Studio SDKs. New SDK log sites stop the build for review; both SDKs are excluded from development prebundling so the same transform applies in development and production. Browser-generated diagnostics and unrelated browser extensions are outside this application's control.
+`src/main.tsx` first imports `installConsolePrivacy`, which installs a runtime
+console wrapper before the app and the locked Studio SDK modules are evaluated.
+It retains reviewed first-argument labels, numbers, booleans and error categories,
+and redacts other string/object values. `tests/web/sdkConsole.spec.ts` audits the
+actual shipped JavaScript in both pinned SDKs. A new or changed executable console
+site fails that Jest assertion for review. The same runtime wrapper applies in
+development and production. Browser-generated diagnostics and unrelated browser
+extensions are outside this application's control.
 
 ## Dependency security
 
 `package.json` overrides the Studio client's transitive `protobufjs` dependency
 to `7.6.5`, including the patched UTF-8 helper. Use `npm ci` with this lockfile.
-After changing dependencies, run `npm audit --omit=dev`, the Web tests and the
-production build.
+Compatible transitive updates include Handlebars `4.7.10`; the direct requirements,
+SDK Git revisions, Vite and test-tool versions remain selected by this lockfile.
+After changing dependencies, run both `npm audit` and `npm audit --omit=dev`, the
+Web tests, lint and the production build. Keep full/development audit findings
+separate from the production dependency result; a zero production count does
+not resolve findings in build and test tools. Review dependency constraints and
+upstream fixes before changing major versions or accepting a suggested downgrade.

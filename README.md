@@ -24,6 +24,13 @@ storage failure is a separate boundary: the core schedules persistence and the
 RPC acknowledgement does not establish durable storage or atomic application
 of both values on every device.
 
+These checks apply to incoming RPC writes. The selected core loads its
+`activity/s` record after checking its size, without validating the stored
+timeout values, and its setters schedule persistence without returning a flash
+write result. This module does not validate or repair that boot-time record.
+Getters and notifications report the effective uint32 values unchanged;
+correcting an old short sleep timeout requires an explicit valid write.
+
 ### Core Implementation
 
 This module includes the following components:
@@ -189,13 +196,14 @@ settings. Standalone, split-central (with/without relay and with sleep disabled)
 peripheral variants, including both split roles with relay disabled, run
 optimized and under ASan/UBSan: twelve variants in total, each repeated three
 times from a new process. It does not test Studio transport,
-radio delivery, real event scheduling or timeout validation policy.
+radio delivery, real event scheduling, core timers or persisted-record loading.
 
 ```bash
 # After west update, with Python, protobuf/protoc and a C compiler available:
-python3 tests/activity/run.py
+python3 tests/activity/run.py --artifacts /results/fresh-activity-run
 # Outside a west workspace, select an existing nanopb checkout:
-NANOPB_SOURCE=/path/to/nanopb python3 tests/activity/run.py
+NANOPB_SOURCE=/path/to/nanopb \
+  python3 tests/activity/run.py --artifacts /results/another-fresh-activity-run
 ```
 
 `bash tests/run-host-docker.sh` dispatches that same owner check directly when
@@ -209,6 +217,30 @@ export ZMK_NANOPB_RELATIVE_PATH=modules/lib/nanopb
 export ZMK_TEST_IMAGE='<prepared-image>@sha256:<digest>'
 bash tests/run-host-docker.sh
 ```
+
+To retain activity binaries, generated codec inputs, binary hashes, raw ordered
+logs and commands/exits/times, set `ACTIVITY_TEST_ARTIFACTS` to a fresh absolute
+directory outside the checkout in the mounted results volume, or pass
+`--artifacts` to the Python or prepared-container entry. An existing file, directory or symlink
+is refused. Failed commands keep their logs and previously built binaries.
+Omitting this option preserves the prior temporary-directory cleanup behavior.
+From the host launcher, select an existing named results volume and a fresh
+relative output path as well:
+
+```bash
+export ZMK_TEST_RESULTS_VOLUME='<prepared-results-volume>'
+export ZMK_TEST_ARTIFACTS_RELATIVE_PATH='review-activity-001'
+bash tests/run-host-docker.sh
+```
+
+The host launcher mounts that volume at `/results` and passes the selected path
+to the same Python entry; it does not create volumes or fetch dependencies.
+Both results variables are required together. A prepared container forwards
+the command-line option and `ACTIVITY_TEST_ARTIFACTS` directly.
+The host launcher rejects command-line `--artifacts` (including abbreviations
+and equals forms); use the results-variable pair there. Resolved paths must
+stay beneath `/results`, including when a parent directory is a symlink, so an
+output cannot silently escape into the disposable container filesystem.
 
 The host entry mounts owner and dependency inputs read-only, disables the
 network, and defaults to two CPUs and 4 GiB. `ZMK_TEST_CPUS` and

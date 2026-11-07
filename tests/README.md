@@ -31,7 +31,7 @@ the owner configuration. No dependencies are installed implicitly by the tests.
 
 The native verifier runs each built binary three times in independent empty
 initial-flash directories, retaining raw output before filtering. It checks real
-process exits, fatal assertions and every linked checked-init result before
+process exits, sanitizer diagnostics, fatal assertions and every linked checked-init result before
 comparing unchanged owner snapshots. A SYS_INIT error cannot be hidden by a
 later matching key trace. Native scheduling and controlled APIs still do not
 establish physical transport/retention. Test-only core/tool dependencies are
@@ -72,13 +72,51 @@ reject missing configuration when both the request and build omit it; excluded
 roles cannot replace the requested role. The verifier retains all three raw
 runs before comparing unchanged ordered snapshots and rejects logged failures,
 fatal output and missing/nonzero completions. `tests/test_native_verifier.py`
-owns eleven real-ELF admission controls, including a deliberately missing
-native scenario, wrong-role and unrelated-fixture controls.
+owns fourteen real-ELF admission controls, including a deliberately missing
+native scenario, wrong-role and unrelated-fixture controls. Recovering ASan and
+UBSan programs independently emit real diagnostics while exiting zero with a
+successful init marker and matching snapshot. Both are rejected; ordinary
+sanitizer names and settings remain valid output. Set
+`OWNER_NATIVE_CONTROL_OUTPUT=/absolute/fresh/control-root` to retain generated
+control sources, binaries, compile records and ordered raw runs.
+
+The original-verifier control is an explicit expected rejection:
+
+```bash
+python3 tests/native_admission_negative_control.py \
+  --output /mounted/results/fresh-admission-control --fixed-probe
+```
+
+It requires the original commit `8a1702c00fa6fb601d4ba58cb3667dd96e98ff51`
+to be prepared locally, then exactly the two live-sanitizer assertions must fail
+against that verifier, with the other twelve cases passing. A missing baseline
+object blocks this control and is not a behavioral rejection. The optional
+fixed probe reuses those exact ELF bytes. This control result is separate from
+product acceptance; it does not patch the active verifier.
+
+`maintenance.json` declares the ASan-only, optimized, strict combined and
+recovering combined native overlays. For each profile, copy the unchanged test
+fixtures into fresh evidence and append its `EXTRA_CONF_FILE` and declared CMake
+arguments to the fixture's `extra-cmake-args`. Run
+`west zmk-test "$PROFILE_TESTS" -m "$PWD" -d "$FRESH_BUILD"`, followed by this
+owner's `verify_native()` API with the copied fixture root. Keep actual compiler
+flags and effective configuration: `CONFIG_ASAN_RECOVER=n` is required for strict
+profiles because a later `-fsanitize-recover=all` would otherwise override an
+earlier strict flag.
+
+The selected core's `kscan_mock.c:103` signed shift can terminate a strict
+combined run before the Studio snapshot. A recovering run may instead reach the
+complete unchanged snapshot with exit zero. Its diagnostic still blocks a clean
+result. Record every diagnostic site, raw process exit, snapshot projection and
+verifier rejection separately. The standard `studio` fixture links no checked
+owner-init hooks; its snapshot establishes registration, while handler/codec and
+real-kernel sender behavior are exercised by their separate entries.
 
 `bash tests/run-web.sh` is the canonical schema-generation/Web test entry.
-It runs all configured Jest scenarios in one worker process. The pre-commit
-Jest hook dispatches this same owner entry so nested workers do not multiply
-the global container budget. Build and lint retain their separate package entries.
+It runs all configured Jest scenarios in one worker process so nested workers
+do not multiply the global container budget. This checkout has no configured
+pre-commit hooks; run these owner entries directly. Build and lint retain their
+separate package entries.
 
 ## Activity wire, sender and Web lifetime checks
 
@@ -94,6 +132,31 @@ refusals, exact getter presence, notifications, setter failure/recovery and
 queue drop/recovery controls. A successful acknowledgement does not establish
 durable storage or atomic multi-device application.
 
+Select `ACTIVITY_TEST_ARTIFACTS=/mounted/results/fresh-name` or pass
+`--artifacts /mounted/results/fresh-name` to the Python entry or prepared-container
+launcher. The path must be absolute, outside the checkout and absent, including
+any symlink at that path. It retains generated sources, all twelve binaries and
+their hashes, compile/run command records, actual exits and ordered raw logs on
+success or failure. Omitting output selection preserves temporary cleanup.
+For a host-launched container use the preflighted `ZMK_TEST_RESULTS_VOLUME` and
+normalized `ZMK_TEST_ARTIFACTS_RELATIVE_PATH` pair documented in the root README.
+
+The host entry rejects command-line artifact options and pins the resolved
+output beneath its mounted `/results` root; parent symlinks cannot redirect
+evidence into the disposable filesystem. Direct prepared-container output
+selection retains its existing absolute-path contract.
+
+`test_activity_entry.py` is included in the canonical owner entry. Its nine
+infrastructure cases exercise output refusal and cleanup, a real compiled
+control with exit 7 and retained binary/log, command recording before launch,
+stdout/stderr order, launch/timeout errors without fabricated exits, default
+and retained host dispatch, prepared-container forwarding and preflight refusal.
+The host CLI override regression rejects separated/equals/abbreviated output
+options with and without a results mount; the previous launcher fails all eight
+subcases at the required rejection assertion.
+These controls validate the runner; their intentional errors are not firmware
+regression results.
+
 Run `python3 tests/report-sender/run.py` with a fresh
 `SETTINGS_REPORT_ARTIFACTS` directory for the real-kernel queue contract. The
 same binary runs the full/refill scenarios three times each. No synchronous
@@ -108,6 +171,27 @@ positive controls retain its existing behavior. The previous Web assertions
 remain unchanged; two fixtures now spy on the owner deadline client rather than
 the SDK wrapper. The owner client uses the same custom call wire contract.
 
+`web/responseValidation.spec.tsx` adds eighteen cases across Refresh, Save and
+Sync using the production deadline client, generated codec and controlled
+transport. Ten original-editor failures expose empty, unknown or mismatched
+responses and the refused report acknowledgement; eight positive controls
+retain negative setter acknowledgements, firmware errors and malformed-codec
+rejection. Every case also requires timer cleanup, enabled retry and valid
+response recovery; failed setters preserve drafts and never queue refresh work.
+
+At the selected DYA core, boot-time activity settings loading validates record
+size but not timeout ranges; the owner wire fixture controls getters/setters
+and does not exercise that loader or actual flash failures. Relay setters apply
+locally without per-half acknowledgements or rollback, including heterogeneous
+sleep-support configurations. Core timers, storage, physical transport and
+multi-device durable application remain separate acceptance boundaries.
+
 Run `bash tests/run-web.sh`, `npm --prefix web run lint` and
 `npm --prefix web run build` in the prepared container. These are DOM/controlled
 transport checks, not browser/device acceptance. Wire schema/options are unchanged.
+
+`python3 tests/sdk_logging_negative_control.py --output /mounted/results/fresh-sdk-control`
+adds one uncalled, synthetic executable console site to the private installed SDK,
+runs the complete Web suite and restores the original bytes. Only the pinned SDK
+AST assertion may fail; every other Web case must pass. This qualifies the site
+audit independently of the runtime console wrapper and is not a production result.

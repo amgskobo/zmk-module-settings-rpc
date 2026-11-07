@@ -7,7 +7,12 @@
   "unsupported_core_status": "NOT APPLICABLE",
   "commands": [
     "python3 -m unittest discover -v -s tests -p test_owner.py",
-    "bash tests/run-web.sh"
+    "bash tests/run-host-docker.sh --artifacts /mounted/results/fresh-activity",
+    "python3 tests/report-sender/run.py",
+    "NANOPB_ROOT=/resolved/nanopb python3 -m unittest discover -v -s tests/review -p test_settings_wire.py",
+    "bash tests/run-web.sh",
+    "npm --prefix web run build",
+    "npm --prefix web run lint"
   ],
   "coverage_map": "tests/contract.json",
   "preserved_assertions": "Relocated fixtures retain their prior assertions; no snapshot auto-accept or unique assertion removal.",
@@ -17,9 +22,12 @@
     "outputs": "Use a fresh evidence directory; existing evidence is never overwritten."
   },
   "gaps": [
-    "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence."
+    "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence.",
+    "The selected core activity/s loader checks record width, not timeout ranges; owner controlled getter/setter tests do not establish startup record validation or actual flash-failure handling.",
+    "Per-half setter failures and heterogeneous sleep support have no transactional acknowledgement or rollback. RPC success does not establish durable multi-device application.",
+    "Combined native ASan/UBSan coverage may stop at the unchanged selected DYA kscan mock's signed 1 << 31 (app/module/drivers/kscan/kscan_mock.c:103), before owner initialization. Keep the failed lane separate from successful host sanitizer and unsanitized native results; rerun it after an explicitly reviewed core fix."
   ],
-  "native_verification": "tests/native_verifier.py: actual exit, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times.",
+  "native_verification": "tests/native_verifier.py: actual exit, no sanitizer diagnostic on merged stdout/stderr, registered completion, unchanged ordered snapshots, identical ELF repeated three times; fourteen real-ELF admission controls.",
   "build_selection": "CMake explicitly selects the activity settings handler and proto/zmk/settings/core.proto. The removed zmk.template sample had no registered handler or client and owned no executable assertion; the settings wire protocol and retained assertions are unchanged.",
   "web_session": {
     "fixture": "tests/web/sessionLifecycle.spec.tsx",
@@ -36,5 +44,72 @@
     ],
     "contract": "Six role configurations, including both relay-disabled split roles, build/run with relay macros absent when disabled; optimized and ASan/UBSan binaries each execute three times. Both original split board targets remain and two no-relay targets are added.",
     "limits": "Compile/API/codec configuration coverage; physical transport and power acceptance remain separate."
+  },
+  "review_response_validation": {
+    "fixture": "tests/web/responseValidation.spec.tsx",
+    "contract": "Refresh/Save/Sync reject empty, unknown and wrong-operation responses; request_sent=false is a valid refusal. Eighteen cases retain deadline cleanup, retry, draft preservation and valid-response recovery.",
+    "regression": "Ten named original-editor failures and eight positive controls; all previous lifecycle assertions remain unchanged.",
+    "limits": "Controlled codec/DOM/SDK boundary, not a claim that the production firmware emits invalid responses or that device-side writes are canceled."
+  },
+  "activity_evidence": {
+    "fixtures": [
+      "tests/activity/run.py",
+      "tests/test_activity_entry.py",
+      "tests/run-host-docker.sh"
+    ],
+    "contract": "Optional fresh absolute output outside checkout retains generated codec/headers, 12 binaries and hashes, pre-launch commands, actual exits, timing and raw ordered output. Default temporary cleanup and all role/variant/repeat selections are preserved; host and prepared-container launchers dispatch the same entry. Host output uses only the named results-volume/path pair, rejects CLI artifact overrides including abbreviations, and checks resolved parents remain beneath the mounted results root.",
+    "controls": "Nine infrastructure cases cover fresh/existing file/directory/symlink/relative/source output, parent-symlink escape, real compile plus exit-7 binary retention, pre-launch recording/order, missing command/timeout classification and launcher forwarding/preflight. The previous launcher fails eight CLI-override rejection subcases. Intentional control failures are separate from firmware results."
+  },
+  "native_admission_control": {
+    "entry": "python3 tests/native_admission_negative_control.py --output FRESH_ABSOLUTE_OUTPUT --fixed-probe",
+    "contract": "Original verifier: exactly two live recovering ASan/UBSan assertions fail; twelve positive cases pass. Fixed probe reuses the same two ELF bytes and rejects actual diagnostics despite process0/init0/snapshot success.",
+    "retention": "OWNER_NATIVE_CONTROL_OUTPUT keeps generated C, compiler commands/dependencies, ELF hashes and three direct ordered raw runs per sanitizer.",
+    "baseline_commit": "8a1702c00fa6fb601d4ba58cb3667dd96e98ff51"
+  },
+  "native_profiles": {
+    "asan": {
+      "config": "CONFIG_ASAN=y\nCONFIG_UBSAN=n\nCONFIG_ASAN_RECOVER=n\n",
+      "cmake": [
+        "-DEXTRA_CFLAGS=-fno-sanitize-recover=all"
+      ],
+      "sanitizers": [
+        "address"
+      ],
+      "recovery": "-fno-sanitize-recover=all"
+    },
+    "optimized": {
+      "config": "CONFIG_SPEED_OPTIMIZATIONS=y\n",
+      "cmake": [],
+      "sanitizers": [],
+      "optimization": "-O2"
+    },
+    "combined-strict": {
+      "config": "CONFIG_ASAN=y\nCONFIG_UBSAN=y\nCONFIG_ASAN_RECOVER=n\n",
+      "cmake": [
+        "-DEXTRA_CFLAGS=-fno-sanitize-recover=all"
+      ],
+      "sanitizers": [
+        "address",
+        "undefined"
+      ],
+      "recovery": "-fno-sanitize-recover=all"
+    },
+    "combined-recovery": {
+      "config": "CONFIG_ASAN=y\nCONFIG_UBSAN=y\nCONFIG_ASAN_RECOVER=y\n",
+      "cmake": [
+        "-DEXTRA_CFLAGS=-fsanitize-recover=all"
+      ],
+      "sanitizers": [
+        "address",
+        "undefined"
+      ],
+      "recovery": "-fsanitize-recover=all"
+    }
+  },
+  "native_profile_scope": "All unchanged native_sim.keymap fixtures via existing west zmk-test extra-cmake-args support and owner verify_native API. Retain every diagnostic site with actual source identity, compiler flags/config/raw process exits separately from snapshot completion. Any sanitizer diagnostic blocks clean acceptance.",
+  "sdk_logging_control": {
+    "entry": "python3 tests/sdk_logging_negative_control.py --output FRESH_ABSOLUTE_OUTPUT",
+    "contract": "One uncalled synthetic SDK log site must fail only the pinned-SDK AST assertion; all other 68 Web cases pass, original installed bytes restored.",
+    "privacy": "Runtime first-import console wrapper and reviewed SDK call sites; no Vite transform claim."
   }
 }

@@ -65,7 +65,7 @@ export class SettingsRpcClient {
         ).then(
           (response) => {
             const data = response?.custom?.call?.payload;
-            if (!data) finish(new Error("Empty RPC response"));
+            if (!data?.length) finish(new Error("Empty RPC response"));
             else finish(undefined, data);
           },
           (error: unknown) => finish(error)

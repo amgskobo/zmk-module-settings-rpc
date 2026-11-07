@@ -1,19 +1,34 @@
 """Use real synthetic ELF programs to check native-result admission."""
 
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 from native_verifier import verify_native
 
 
 class NativeVerifierContract(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        retained = os.environ.get("OWNER_NATIVE_CONTROL_OUTPUT")
+        if retained:
+            base = Path(retained)
+            owner = Path(__file__).resolve().parents[1]
+            if not base.is_absolute() or base.resolve().is_relative_to(owner):
+                raise ValueError(
+                    "retained controls require absolute evidence outside source"
+                )
+            self.root = base.resolve() / self._testMethodName
+            self.root.mkdir(parents=True, exist_ok=False)
+        else:
+            self.temp = tempfile.TemporaryDirectory()
+            self.addCleanup(self.temp.cleanup)
+            self.root = Path(self.temp.name)
         self.tests = self.root / "fixtures"
         fixture = self.tests / "case"
         fixture.mkdir(parents=True)
@@ -33,7 +48,14 @@ class NativeVerifierContract(unittest.TestCase):
         self.binary = binary_dir / "zmk.exe"
 
     def compile(
-        self, *, hook=True, reported=0, process_exit=0, fatal=False, failed_log=False
+        self,
+        *,
+        hook=True,
+        reported=0,
+        process_exit=0,
+        fatal=False,
+        failed_log=False,
+        benign_sanitizer_names=False,
     ):
         source = self.root / "program.c"
         body = "#include <stdio.h>\n"
@@ -49,21 +71,166 @@ class NativeVerifierContract(unittest.TestCase):
             body += 'puts("ASSERTION FAIL"); '
         if failed_log:
             body += 'puts("<err> owner: FAIL: controlled assertion"); '
+        if benign_sanitizer_names:
+            body += (
+                'puts("CONFIG_ASAN=y AddressSanitizer enabled"); '
+                'puts("UndefinedBehaviorSanitizer setting; runtime error counter=0"); '
+            )
         body += f'puts("EVENT 1"); return {process_exit}; }}\n'
         source.write_text(body)
-        subprocess.run(
-            [
-                "cc",
-                "-std=c11",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                str(source),
-                "-o",
-                str(self.binary),
-            ],
-            check=True,
+        command = [
+            "cc",
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-MD",
+            "-MF",
+            str(self.root / "program.d"),
+            str(source),
+            "-o",
+            str(self.binary),
+        ]
+        started = time.time_ns()
+        result = subprocess.run(command, capture_output=True, text=True)
+        (self.root / "compile.log").write_text(result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        (self.root / "compile.json").write_text(
+            json.dumps(
+                {
+                    "argv": command,
+                    "cwd": str(Path.cwd()),
+                    "start_unix_ns": started,
+                    "exit": result.returncode,
+                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "binary_sha256": hashlib.sha256(
+                        self.binary.read_bytes()
+                    ).hexdigest(),
+                },
+                indent=2,
+            )
+            + "\n"
         )
+
+    def compile_recovering_sanitizer(self, sanitizer):
+        """A real diagnostic with successful init/snapshot and process exit zero."""
+        source = self.root / "sanitizer.c"
+        fault = (
+            "volatile int index = 4; unsigned char *data = malloc(4); "
+            "if (!data) return 2; data[index] = 7; free(data);"
+            if sanitizer == "address"
+            else "volatile int value = INT_MAX; value += 1; (void)value;"
+        )
+        source.write_text(
+            "#include <limits.h>\n#include <stdio.h>\n#include <stdlib.h>\n"
+            "int owner_checked_control(void) { "
+            'puts("OWNER_TEST_RESULT control=0"); return 0; }\n'
+            "int main(void) { "
+            + fault
+            + ' owner_checked_control(); puts("EVENT 1"); return 0; }\n'
+        )
+        command = [
+            "cc",
+            "-std=c11",
+            "-O0",
+            "-g",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fno-pie",
+            "-no-pie",
+            "-fno-omit-frame-pointer",
+            "-fsanitize=" + sanitizer,
+            "-fsanitize-recover=all",
+            "-MD",
+            "-MF",
+            str(self.root / "sanitizer.d"),
+            str(source),
+            "-o",
+            str(self.binary),
+        ]
+        started = time.time_ns()
+        result = subprocess.run(command, capture_output=True, text=True)
+        (self.root / "compile.log").write_text(result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        (self.root / "compile.json").write_text(
+            json.dumps(
+                {
+                    "argv": command,
+                    "cwd": str(Path.cwd()),
+                    "start_unix_ns": started,
+                    "exit": result.returncode,
+                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "binary_sha256": hashlib.sha256(
+                        self.binary.read_bytes()
+                    ).hexdigest(),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        env = dict(
+            os.environ,
+            ASAN_OPTIONS="detect_leaks=0:halt_on_error=0",
+            UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1",
+        )
+        diagnostic = "AddressSanitizer:" if sanitizer == "address" else "runtime error:"
+        runs = self.root / "direct-runs"
+        runs.mkdir()
+        for trial in range(1, 4):
+            output = runs / str(trial)
+            output.mkdir()
+            clock = time.monotonic_ns()
+            result = subprocess.run(
+                [str(self.binary)],
+                cwd=output,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=30,
+            )
+            (output / "raw.log").write_text(result.stdout)
+            (output / "command.json").write_text(
+                json.dumps(
+                    {
+                        "argv": [str(self.binary)],
+                        "cwd": str(output),
+                        "elapsed_ns": time.monotonic_ns() - clock,
+                        "exit": result.returncode,
+                        "environment": {
+                            key: env[key] for key in ("ASAN_OPTIONS", "UBSAN_OPTIONS")
+                        },
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn(diagnostic, result.stdout)
+            self.assertIn("OWNER_TEST_RESULT control=0", result.stdout)
+            self.assertIn("EVENT 1\n", result.stdout)
+        return env
+
+    def test_recovering_asan_with_zero_exit_is_rejected(self):
+        env = self.compile_recovering_sanitizer("address")
+        with (
+            patch.dict(os.environ, env),
+            self.assertRaisesRegex(AssertionError, "sanitizer diagnostic"),
+        ):
+            verify_native(self.output, self.tests)
+
+    def test_recovering_ubsan_with_zero_exit_is_rejected(self):
+        env = self.compile_recovering_sanitizer("undefined")
+        with (
+            patch.dict(os.environ, env),
+            self.assertRaisesRegex(AssertionError, "sanitizer diagnostic"),
+        ):
+            verify_native(self.output, self.tests)
+
+    def test_sanitizer_names_and_normal_markers_are_not_diagnostics(self):
+        self.compile(benign_sanitizer_names=True)
+        verify_native(self.output, self.tests)
 
     def test_positive_repeats_preserve_raw_output(self):
         self.compile()

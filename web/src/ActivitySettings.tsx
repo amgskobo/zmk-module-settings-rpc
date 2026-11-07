@@ -14,6 +14,7 @@ export const SUBSYSTEM_IDENTIFIER = "zmk__settings";
 
 const MAX_TIMEOUT_MS = 0xffffffff;
 const TIMEOUT_ERROR = "Timeouts must be whole numbers from 0 to 4294967295 ms.";
+const RESPONSE_ERROR = "Unexpected activity settings response";
 
 function parseTimeout(value: string): number | null {
   if (!/^\d+$/.test(value)) return null;
@@ -224,13 +225,15 @@ function ActivitySettingsSession({ autoFetch = true }: ActivitySettingsProps) {
       if (responsePayload) {
         const resp = Response.decode(responsePayload);
 
-        if (resp.getAllActivitySettings) {
-          if (resp.getAllActivitySettings.requestSent) {
-            setMessage("Collecting settings from all devices...");
-            // Actual settings will arrive via notifications
-          }
-        } else if (resp.error) {
+        if (resp.error) {
           setError(`Error: ${resp.error.message}`);
+        } else if (!resp.getAllActivitySettings) {
+          setError(RESPONSE_ERROR);
+        } else if (!resp.getAllActivitySettings.requestSent) {
+          setError("Settings report request refused");
+        } else {
+          setMessage("Collecting settings from all devices...");
+          // Actual settings will arrive via notifications
         }
       }
     } catch (err) {
@@ -244,7 +247,7 @@ function ActivitySettingsSession({ autoFetch = true }: ActivitySettingsProps) {
     }
   };
 
-  const syncAllDevices = async () => {
+  const saveSettings = async (refreshDevices: boolean) => {
     if (!zmkApp.state.connection || !subsystem || !isCurrentSession()) return;
 
     const idle = parseTimeout(idleMs);
@@ -266,7 +269,7 @@ function ActivitySettingsSession({ autoFetch = true }: ActivitySettingsProps) {
     try {
       const service = session.client;
 
-      // Apply central's current settings to all devices
+      // Both Save and Sync use the same setter; Sync also refreshes reports.
       const request = Request.create({
         setActivitySettings: {
           settings: {
@@ -283,26 +286,41 @@ function ActivitySettingsSession({ autoFetch = true }: ActivitySettingsProps) {
       if (responsePayload) {
         const resp = Response.decode(responsePayload);
 
-        if (resp.setActivitySettings) {
-          if (resp.setActivitySettings.success) {
-            if (draftRevision.current === revision) draftDirty.current = false;
-            setMessage("Settings applied; refreshing device reports...");
-            // The central's acknowledgement does not confirm peripheral
-            // delivery. Keep the reported mismatch until fresh reports arrive.
+        if (resp.error) {
+          setError(`Error: ${resp.error.message}`);
+        } else if (!resp.setActivitySettings) {
+          setError(RESPONSE_ERROR);
+        } else if (!resp.setActivitySettings.success) {
+          setError(
+            refreshDevices
+              ? "Failed to sync settings"
+              : "Failed to update settings"
+          );
+        } else {
+          if (draftRevision.current === revision) draftDirty.current = false;
+          setMessage(
+            refreshDevices
+              ? "Settings applied; refreshing device reports..."
+              : "Settings updated successfully!"
+          );
+          // The central's acknowledgement does not confirm peripheral
+          // delivery. Keep the reported mismatch until fresh reports arrive.
+          if (refreshDevices) {
             session.refreshTimer = setTimeout(() => {
               session.refreshTimer = null;
               if (isCurrentRequest()) void getCurrentSettings();
             }, 500);
-          } else {
-            setError("Failed to sync settings");
           }
-        } else if (resp.error) {
-          setError(`Error: ${resp.error.message}`);
         }
       }
     } catch (err) {
       if (!isCurrentRequest()) return;
-      console.error("Failed to sync settings:", errorKind(err));
+      console.error(
+        refreshDevices
+          ? "Failed to sync settings:"
+          : "Failed to set activity settings:",
+        errorKind(err)
+      );
       setError(
         `Failed: ${err instanceof Error ? err.message : "Unknown error"}`
       );
@@ -311,65 +329,8 @@ function ActivitySettingsSession({ autoFetch = true }: ActivitySettingsProps) {
     }
   };
 
-  const updateSettings = async () => {
-    if (!zmkApp.state.connection || !subsystem || !isCurrentSession()) return;
-
-    const idle = parseTimeout(idleMs);
-    const sleep = parseTimeout(sleepMs);
-    if (idle === null || sleep === null) {
-      setMessage(null);
-      setError(TIMEOUT_ERROR);
-      return;
-    }
-
-    const revision = draftRevision.current;
-    draftDirty.current = true;
-    const isCurrentRequest = beginRequest();
-
-    setIsLoading(true);
-    setError(null);
-    setMessage(null);
-
-    try {
-      const service = session.client;
-
-      const request = Request.create({
-        setActivitySettings: {
-          settings: {
-            idleMs: idle,
-            sleepMs: sleep,
-          },
-        },
-      });
-
-      const payload = Request.encode(request).finish();
-      const responsePayload = await service.callRPC(payload);
-      if (!isCurrentRequest()) return;
-
-      if (responsePayload) {
-        const resp = Response.decode(responsePayload);
-
-        if (resp.setActivitySettings) {
-          if (resp.setActivitySettings.success) {
-            if (draftRevision.current === revision) draftDirty.current = false;
-            setMessage("Settings updated successfully!");
-          } else {
-            setError("Failed to update settings");
-          }
-        } else if (resp.error) {
-          setError(`Error: ${resp.error.message}`);
-        }
-      }
-    } catch (err) {
-      if (!isCurrentRequest()) return;
-      console.error("Failed to set activity settings:", errorKind(err));
-      setError(
-        `Failed: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
-    } finally {
-      if (isCurrentRequest()) setIsLoading(false);
-    }
-  };
+  const syncAllDevices = () => saveSettings(true);
+  const updateSettings = () => saveSettings(false);
 
   if (!subsystem) {
     return (

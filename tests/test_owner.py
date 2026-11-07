@@ -11,6 +11,7 @@ from native_verifier import verify_native
 from test_native_verifier import NativeVerifierContract as NativeVerifierContract
 
 from test_build_budget import BuildBudgetContract as BuildBudgetContract
+from test_activity_entry import ActivityEntryContract as ActivityEntryContract
 
 THIS_DIR = Path(__file__).resolve().parent.parent
 
