@@ -66,6 +66,17 @@ static void send_activity_settings_notification(uint32_t idle_ms,
                                                 uint32_t sleep_ms,
                                                 uint32_t source);
 
+static int set_error_response(zmk_settings_Response *resp, const char *message,
+                              int rc) {
+    // The framework owns this buffer through deferred response encoding.
+    // Build the error here instead of copying a second message from the stack.
+    resp->which_response_type = zmk_settings_Response_error_tag;
+    memset(&resp->response_type.error, 0, sizeof(resp->response_type.error));
+    snprintf(resp->response_type.error.message,
+             sizeof(resp->response_type.error.message), "%s", message);
+    return rc;
+}
+
 /**
  * Main request handler for the settings RPC subsystem.
  * Sets up the encoding callback for the response.
@@ -84,10 +95,7 @@ static bool settings_rpc_handle_request(
     if (!pb_decode(&req_stream, zmk_settings_Request_fields, &req)) {
         LOG_WRN("Failed to decode settings request: %s",
                 PB_GET_ERROR(&req_stream));
-        zmk_settings_ErrorResponse err = zmk_settings_ErrorResponse_init_zero;
-        snprintf(err.message, sizeof(err.message), "Failed to decode request");
-        resp->which_response_type = zmk_settings_Response_error_tag;
-        resp->response_type.error = err;
+        set_error_response(resp, "Failed to decode request", -EINVAL);
         return true;
     }
 
@@ -113,21 +121,9 @@ static bool settings_rpc_handle_request(
 
     // A handler that already explained its refusal keeps its own message.
     if (rc != 0 && resp->which_response_type != zmk_settings_Response_error_tag) {
-        zmk_settings_ErrorResponse err = zmk_settings_ErrorResponse_init_zero;
-        snprintf(err.message, sizeof(err.message), "Failed to process request");
-        resp->which_response_type = zmk_settings_Response_error_tag;
-        resp->response_type.error = err;
+        set_error_response(resp, "Failed to process request", rc);
     }
     return true;
-}
-
-static int set_error_response(zmk_settings_Response *resp, const char *message,
-                              int rc) {
-    zmk_settings_ErrorResponse err = zmk_settings_ErrorResponse_init_zero;
-    snprintf(err.message, sizeof(err.message), "%s", message);
-    resp->which_response_type = zmk_settings_Response_error_tag;
-    resp->response_type.error = err;
-    return rc;
 }
 
 /**
